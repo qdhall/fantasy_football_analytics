@@ -324,14 +324,14 @@ elif page == "Season Stats":
     st.plotly_chart(fig, use_container_width=True)
 
 elif page == "H2H Matrix":
-    st.header("🏆 Head-to-Head Matrix")
+    st.header("Head-to-Head Matrix")
     
     # Instructions
     st.info("📖 **How to read**: Row team's record vs Column team. Format: Wins-Losses")
     
     # Automatically generate matrix when page loads
     if 'h2h_matrix' not in st.session_state:
-        with st.spinner("Processing league data... This may take a few minutes..."):
+        with st.spinner("Processing league data... "):
             try:
                 # Generate the matrix using your functions
                 h2h_matrix = create_h2h_matrix(league_id, start_year, end_year, espn_s2, swid)
