@@ -389,7 +389,7 @@ if page == "Team Overview":
     # Team selector at the top
     owner_options = []
     for owner, data in initial_teams_data.items():
-        owner_options.append(f"{owner} - {data['team_name']}")
+        owner_options.append(f"{owner}")
     
     selected_option = st.selectbox("Select a team:", owner_options)
     selected_owner = selected_option.split(' - ')[0]
@@ -405,8 +405,6 @@ if page == "Team Overview":
     # ALL-TIME STATS SECTION
     st.subheader("📊 All-Time Stats (2019-2024)")
     
-    # Add note about regular season weeks
-    st.caption("*Regular Season: 13 weeks (2019-2020), 14 weeks (2021-2024)*")
     
     if selected_owner in all_time_stats:
         owner_all_time = all_time_stats[selected_owner]
@@ -526,10 +524,6 @@ if page == "Team Overview":
     
     # INDIVIDUAL YEAR STATS SECTION
     st.subheader(f"📅 {selected_year} Season Stats")
-    
-    # Show regular season weeks for selected year
-    reg_season_weeks = 13 if selected_year in [2019, 2020] else 14
-    st.caption(f"*{selected_year} Regular Season: {reg_season_weeks} weeks*")
     
     if year_data and selected_owner in year_data:
         team_data_dict = year_data[selected_owner]
