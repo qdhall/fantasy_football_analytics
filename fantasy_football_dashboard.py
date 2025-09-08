@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("Athletic Enough to Play Fantasy Football: League Portal")
 st.markdown("---")
 
-# League configuration variables (hardcoded)
+# League configuration variables
 league_id = 23224200
 espn_s2 = 'AEAeJkkoTaooG%2BUU5zr3ccb3p7rMEYzp2QPA%2F2Vh2dIO9EMvlN8xNqbuVSXa37QQiUn%2BrY9M5vIBwz94BNbJBNOERwRGpXaqo1013tLZCyBoYzvX1X1C%2BpDRtfXzgEyWSPe1ck1bRcEgF0XEKse%2BNKO7bAAgyz7Q7Z2dggtY16%2F3S5MbftgGoQ08brZh0G4z4FvEPc%2BGzUzDLEYS8lEX8CLIrUYDQkP%2FL0m%2F0k%2F7WxfThtbJ42blZENQsVMhJcUvewcMaOofh49SP3bNhnIXAqzDdt8l4RSbOGycrqu95c9YzibQRwKX%2FsyWpd5WR1%2BkHRQ%3D'
 swid = '{1CE75B65-F3E4-4903-A75B-65F3E4E903A7}'
@@ -30,12 +30,9 @@ def get_playoff_start_week(year):
     else:
         return 15  # 14 regular season weeks, playoffs start week 15
 
-# Your actual H2H functions with playoff separation
+# Head to head 
 def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=None, swid=None, record_type='all'):
-    """
-    Fixed version - correctly award wins to the team with the HIGHER score
-    record_type: 'all', 'regular', 'playoffs'
-    """
+    
     
     all_time_h2h = {}
     team_names = {}
@@ -56,7 +53,7 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
             processed_games = set()
             
             for week in range(max_week):
-                # week is 0-indexed, so add 1 for actual week number
+                
                 actual_week = week + 1
                 
                 # Filter based on record type
@@ -64,7 +61,7 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
                     continue
                 elif record_type == 'playoffs' and actual_week < playoff_start_week:
                     continue
-                # 'all' includes everything
+                
                     
                 for team in league.teams:
                     if (week < len(team.schedule) and 
@@ -75,7 +72,7 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
                         team_score = team.scores[week]
                         opponent_score = opponent.scores[week]
                         
-                        # Skip if no scores available
+                        
                         if team_score is None or opponent_score is None:
                             continue
                         
@@ -87,21 +84,21 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
                             continue
                         processed_games.add(full_game_id)
                         
-                        # FIX: Correctly determine winner by HIGHER score
+                        # determine winner
                         if team_score > opponent_score:
-                            # Team won (higher score)
+                            # Team won
                             winner_id = team.team_id
                             winner_name = team.team_name
                             loser_id = opponent.team_id
                             loser_name = opponent.team_name
                         elif opponent_score > team_score:
-                            # Opponent won (higher score)
+                            # Opponent won
                             winner_id = opponent.team_id
                             winner_name = opponent.team_name
                             loser_id = team.team_id
                             loser_name = team.team_name
                         else:
-                            continue  # Skip ties
+                            continue  
                         
                         # Create consistent key (always smaller ID first for consistency)
                         key = tuple(sorted([team.team_id, opponent.team_id]))
@@ -109,14 +106,14 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
                         if key not in all_time_h2h:
                             all_time_h2h[key] = {team.team_id: 0, opponent.team_id: 0}
                         
-                        # CRITICAL FIX: Record the win for the team with HIGHER score
+                        # Record the win for the team with HIGHER score
                         all_time_h2h[key][winner_id] += 1
         
         except Exception as e:
             print(f"Error processing {year}: {e}")
             st.error(f"Error processing {year}: {e}")
     
-    # Convert to readable format
+    # h2h dict
     readable_records = {}
     for (team1_id, team2_id), wins_dict in all_time_h2h.items():
         team1_name = team_names.get(team1_id, f"Team {team1_id}")
@@ -180,9 +177,9 @@ def create_h2h_matrix(league_id, start_year, end_year, espn_s2=None, swid=None, 
                 if lookup_key in all_records:
                     record = all_records[lookup_key]
                     
-                    # CHEAT: Just flip the wins and losses
-                    flipped_wins = record['team2_wins']  # Use team2's wins as row team's wins
-                    flipped_losses = record['team1_wins']  # Use team1's wins as row team's losses
+                    
+                    flipped_wins = record['team2_wins']  
+                    flipped_losses = record['team1_wins']  
                     
                     matrix_data[row_team][col_team] = f"{flipped_wins}-{flipped_losses}"
                 else:
@@ -255,8 +252,6 @@ def calculate_all_time_stats(league_id, start_year, end_year, espn_s2, swid):
                             opp_score = opponent.scores[week_num]
                             
                             if opp_score is not None:
-                                # Determine if regular season or playoff
-                                # week_num is 0-indexed, so add 1 for actual week number
                                 actual_week = week_num + 1
                                 if actual_week < playoff_start_week:
                                     # Regular season
@@ -508,8 +503,8 @@ if page == "Team Overview":
     
     st.markdown("---")
     
-    # YEAR SELECTOR - Now positioned here, below all-time stats and above individual year stats
-    available_years = list(range(2019, 2025))  # Adjust based on your league history
+    # YEAR SELECTOR 
+    available_years = list(range(2019, 2025))  
     selected_year = st.selectbox("Select Year for Individual Stats:", available_years, index=len(available_years)-1)
     
     # Load data for selected year
@@ -587,7 +582,7 @@ if page == "Team Overview":
 elif page == "Player Analysis":
     st.header("👤 Player Analysis")
     
-    # Use the same team data from session state or load it
+    
     if 'all_teams_data' not in st.session_state:
         with st.spinner("Loading player data..."):
             for year_to_try in [2024, 2023]:
