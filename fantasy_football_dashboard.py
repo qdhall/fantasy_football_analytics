@@ -556,7 +556,7 @@ if page == "Team Overview":
             roster_df = team_data_dict['players'].sort_values('Points', ascending=False)
             
             # Format the dataframe for display
-            display_df = roster_df[['Player', 'Position', 'Pro Team', 'Points', 'Avg Points', 'Injury Status']].copy()
+            display_df = roster_df[['Player', 'Position', 'Pro Team', 'Points', 'Avg Points']].copy()
             display_df['Points'] = display_df['Points'].round(1)
             display_df['Avg Points'] = display_df['Avg Points'].round(1)
             
@@ -721,8 +721,6 @@ elif page == "H2H Matrix":
     # Instructions
     st.info("📖 **How to read**: Row team's record vs Column team. Format: Wins-Losses")
     
-    # Show regular season weeks info
-    st.caption(f"*Regular Season: 13 weeks (2019-2020), 14 weeks (2021-{end_year})*")
     
     # Add toggle for regular season vs playoffs
     col1, col2 = st.columns(2)
