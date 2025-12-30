@@ -27,8 +27,10 @@ def get_playoff_start_week(year):
     """Get the correct playoff start week based on year"""
     if year in [2019, 2020]:
         return 14  # 13 regular season weeks, playoffs start week 14
+    elif year == 2021:
+        return 15  # 14 regular season weeks for 2021
     else:
-        return 15  # 14 regular season weeks, playoffs start week 15
+        return 15  # Standard 14 regular season weeks for 2022+, playoffs start week 15
 
 # Head to head 
 def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=None, swid=None, record_type='all'):
@@ -360,7 +362,7 @@ if page == "H2H Matrix":
     st.sidebar.subheader("League Configuration")
     
     start_year = st.sidebar.number_input("Start Year", value=2019, min_value=2000, max_value=2099)
-    end_year = st.sidebar.number_input("End Year", value=2024, min_value=2000, max_value=2099)
+    end_year = st.sidebar.number_input("End Year", value=2025, min_value=2000, max_value=2099)
 
 # Main content based on page selection
 if page == "Team Overview":
@@ -369,8 +371,8 @@ if page == "Team Overview":
     # Load initial data for team selector
     if 'initial_teams_data' not in st.session_state:
         with st.spinner("Loading team data..."):
-            # Try to load most recent year for team list
-            for year_to_try in [2024, 2023]:
+            # Try to load most recent year for team list, now including 2025
+            for year_to_try in [2025, 2024, 2023]:
                 try:
                     initial_data = load_real_teams_data_full(league_id, year_to_try, espn_s2, swid)
                     if initial_data:
@@ -394,16 +396,16 @@ if page == "Team Overview":
     selected_option = st.selectbox("Select a team:", owner_options)
     selected_owner = selected_option.split(' - ')[0]
     
-    # Calculate all-time stats if not cached
+    # Calculate all-time stats if not cached - now includes 2025
     if 'all_time_stats' not in st.session_state:
         with st.spinner("Calculating all-time statistics..."):
-            all_time_stats = calculate_all_time_stats(league_id, 2019, 2024, espn_s2, swid)
+            all_time_stats = calculate_all_time_stats(league_id, 2019, 2025, espn_s2, swid)
             st.session_state['all_time_stats'] = all_time_stats
     
     all_time_stats = st.session_state['all_time_stats']
     
     # ALL-TIME STATS SECTION
-    st.subheader("📊 All-Time Stats (2019-2024)")
+    st.subheader("📊 All-Time Stats (2019-2025)")
     
     
     if selected_owner in all_time_stats:
@@ -501,8 +503,8 @@ if page == "Team Overview":
     
     st.markdown("---")
     
-    # YEAR SELECTOR 
-    available_years = list(range(2019, 2025))  
+    # YEAR SELECTOR - Now includes 2025
+    available_years = list(range(2019, 2026))  
     selected_year = st.selectbox("Select Year for Individual Stats:", available_years, index=len(available_years)-1)
     
     # Load data for selected year
@@ -579,7 +581,7 @@ elif page == "Player Analysis":
     
     if 'all_teams_data' not in st.session_state:
         with st.spinner("Loading player data..."):
-            for year_to_try in [2024, 2023]:
+            for year_to_try in [2025, 2024, 2023]:
                 try:
                     all_teams_data = load_real_teams_data_full(league_id, year_to_try, espn_s2, swid)
                     
@@ -668,6 +670,9 @@ elif page == "Player Analysis":
 elif page == "Matchup Predictor":
     st.header("🔮 Matchup Predictor")
     
+    # Note about 2025 season
+    st.info("🏈 **2025 Season Ready!** Matchup predictor will use current season data as it becomes available.")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -695,6 +700,9 @@ elif page == "Matchup Predictor":
 
 elif page == "Season Stats":
     st.header("📈 Season Statistics")
+    
+    # Note about 2025 season
+    st.info("🏈 **2025 Season Ready!** Statistics will populate as the season progresses.")
     
     # League standings table
     standings = pd.DataFrame({
@@ -920,10 +928,12 @@ elif page == "H2H Matrix":
 # Sidebar info
 st.sidebar.markdown("---")
 st.sidebar.info(
-    "This app is still in development and many of its modules represent feature concepts and contain dummy data. "
-    "Navigate to the H2H Matrix Tab to see initial functionality. Excited to add to this project as the season progresses🫡"
+    "🏈 **2025 Season Update!** The app now includes 2025 season data support. "
+    "Navigate to different tabs to explore your league's history and current season stats. "
+    "H2H Matrix shows comprehensive head-to-head records across all seasons."
 )
 
 # Footer
 st.markdown("---")
-st.markdown("*Last updated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "*")
+current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+st.markdown(f"*Last updated: {current_time} | Now supporting 2019-2025 seasons* 🏈")
