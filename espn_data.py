@@ -28,34 +28,94 @@ def _cache_path(kind, league_id, year):
     return CACHE_DIR / f"{kind}_v{CACHE_SCHEMA_VERSION}_{league_id}_{year}.pkl"
 
 
+def _r2_client_and_bucket():
+    """An (s3_client, bucket_name) pair if R2 credentials are configured in
+    secrets, else (None, None). Local disk alone is fine for local dev, but on
+    Streamlit Cloud the container's disk is wiped on every redeploy and on
+    every sleep/wake cycle - R2 is the layer that actually survives that, so
+    this is optional (checked, never required) to keep local dev working
+    without an R2 account."""
+    required = ("r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_bucket")
+    if not all(k in st.secrets for k in required):
+        return None, None
+    try:
+        import boto3
+        from botocore.config import Config
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=f"https://{st.secrets['r2_account_id']}.r2.cloudflarestorage.com",
+            aws_access_key_id=st.secrets["r2_access_key_id"],
+            aws_secret_access_key=st.secrets["r2_secret_access_key"],
+            config=Config(signature_version="s3v4"),
+            region_name="auto",
+        )
+        return client, st.secrets["r2_bucket"]
+    except Exception as e:
+        print(f"R2 client setup failed: {e}")
+        return None, None
+
+
+def _write_local_cache(path, data):
+    try:
+        CACHE_DIR.mkdir(exist_ok=True)
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        print(f"Local cache write failed for {path}: {e}")
+
+
 def _load_cached_year(kind, league_id, year):
-    """The cached per-year result if this season is over and a cache file exists
-    for the current schema version, else None (meaning: compute it live)."""
+    """The cached per-year result if this season is over, else None (meaning:
+    compute it live). Checks local disk first (fast, no network round trip),
+    then falls back to R2 (survives a wiped local disk) and warms local disk
+    from whatever R2 returns so the rest of this container's lifetime reads
+    stay local."""
     if not _is_year_final(year):
         return None
+
     path = _cache_path(kind, league_id, year)
-    if not path.exists():
+    if path.exists():
+        try:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"Local cache read failed for {kind} {year}: {e}")
+
+    client, bucket = _r2_client_and_bucket()
+    if client is None:
         return None
     try:
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+        obj = client.get_object(Bucket=bucket, Key=path.name)
+        data = pickle.loads(obj['Body'].read())
+        _write_local_cache(path, data)
+        return data
+    except client.exceptions.NoSuchKey:
+        return None
     except Exception as e:
-        print(f"Cache read failed for {kind} {year}: {e}")
+        print(f"R2 cache read failed for {kind} {year}: {e}")
         return None
 
 
 def _save_cached_year(kind, league_id, year, data):
     """Persists a completed season's computed result so it never needs to be
-    fetched from ESPN again. A season still in progress is never cached, since
-    its data can still change week to week."""
+    fetched from ESPN again - written to local disk (fast reads for the rest
+    of this container's life) and to R2 (so a future redeploy/cold-start
+    doesn't have to re-fetch it from ESPN at all). A season still in progress
+    is never cached, since its data can still change week to week."""
     if not _is_year_final(year):
         return
+
+    path = _cache_path(kind, league_id, year)
+    _write_local_cache(path, data)
+
+    client, bucket = _r2_client_and_bucket()
+    if client is None:
+        return
     try:
-        CACHE_DIR.mkdir(exist_ok=True)
-        with open(_cache_path(kind, league_id, year), 'wb') as f:
-            pickle.dump(data, f)
+        client.put_object(Bucket=bucket, Key=path.name, Body=pickle.dumps(data))
     except Exception as e:
-        print(f"Cache write failed for {kind} {year}: {e}")
+        print(f"R2 cache write failed for {kind} {year}: {e}")
 
 
 def get_credentials():
