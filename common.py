@@ -511,9 +511,21 @@ def render_nav_icon_defs():
 
 
 def _nav_icon_html(shape_name, delay_s, dim=False):
+    # render_custom_nav() paints this markup on every page navigation BEFORE
+    # the destination page's own configure_page() call re-injects the
+    # <style> block that sizes .nav-icon-slot/.nav-icon-slot svg - relying on
+    # that external stylesheet alone left a brief window where the browser
+    # renders the raw, unstyled SVG at its default (much larger) intrinsic
+    # size, which is the "icons glitch huge" flash on click. Setting the size
+    # inline here means it's correct on the very first paint regardless of
+    # when/whether the stylesheet has loaded yet; the CSS classes stay for
+    # the drop-shadow/dim/shimmer effects only.
     slot_class = "nav-icon-slot nav-icon-dim" if dim else "nav-icon-slot"
     return (
-        f'<span class="{slot_class}"><svg viewBox="0 0 48 48" aria-hidden="true">'
+        f'<span class="{slot_class}" style="display:inline-flex;align-items:center;'
+        f'justify-content:center;width:22px;height:22px;flex-shrink:0;">'
+        f'<svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true" '
+        f'style="width:20px;height:20px;display:block;">'
         f'<g mask="url(#navMask{shape_name})">'
         '<rect width="48" height="48" fill="url(#navGoldBase)" />'
         f'<rect class="nav-shimmer-band" x="-48" width="48" height="48" fill="url(#navShimmerBand)" '
@@ -540,7 +552,9 @@ def render_custom_nav(pages):
                 # starting in the same column instead of Home needing its own
                 # special centered treatment to not look like a stray, floating
                 # nav item.
-                icon_html = _nav_icon_html(shape_name, i * 0.15, dim=coming_soon) if shape_name else '<span class="nav-icon-slot"></span>'
+                icon_html = _nav_icon_html(shape_name, i * 0.15, dim=coming_soon) if shape_name else (
+                    '<span class="nav-icon-slot" style="display:inline-flex;width:22px;height:22px;flex-shrink:0;"></span>'
+                )
                 st.markdown(icon_html, unsafe_allow_html=True)
                 if coming_soon:
                     st.page_link(

@@ -12,10 +12,10 @@ pages = [
     st.Page("views/team_overview.py", title="Team Overview"),
     st.Page("views/luck_index.py", title="Luck Index"),
     st.Page("views/team_killers.py", title="Team Killers (Do Not Draft)"),
+    st.Page("views/h2h_matrix.py", title="H2H Matrix"),
     st.Page("views/player_analysis.py", title="Player Analysis"),
     st.Page("views/matchup_predictor.py", title="Matchup Predictor"),
     st.Page("views/season_stats.py", title="Season Stats"),
-    st.Page("views/h2h_matrix.py", title="H2H Matrix"),
     st.Page("views/matchup_history.py", title="Matchup History"),
 ]
 
