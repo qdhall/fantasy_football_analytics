@@ -1,6 +1,6 @@
 import streamlit as st
 
-from common import render_custom_nav, render_nav_icon_defs
+from common import render_custom_nav, render_nav_auto_collapse, render_nav_icon_defs
 
 pages = [
     st.Page("views/home.py", title="Home", default=True),
@@ -26,4 +26,5 @@ pages = [
 nav = st.navigation(pages, position="hidden")
 render_nav_icon_defs()
 render_custom_nav(pages)
+render_nav_auto_collapse()
 nav.run()

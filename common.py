@@ -565,6 +565,57 @@ def render_custom_nav(pages):
                     st.page_link(page, label=page.title)
 
 
+def render_nav_auto_collapse():
+    """Auto-collapses the sidebar right after a nav link is tapped, but only
+    on narrow/mobile viewports where the sidebar is a full-width overlay
+    covering the page - on desktop it's a persistent side panel, where
+    closing it on every click would just be an extra step to reopen it for
+    the next one. st.markdown never executes <script> tags (its raw-HTML
+    path uses dangerouslySetInnerHTML, which browsers don't run scripts
+    from), so this goes through components.v1.html's real iframe instead and
+    reaches back out to window.parent.document to click the app's own
+    collapse button."""
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function() {
+            var doc = window.parent.document;
+            var MOBILE_BREAKPOINT = 640;
+
+            function collapseSidebar() {
+                var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button');
+                if (btn) btn.click();
+            }
+
+            function onClick(e) {
+                var link = e.target.closest(
+                    '[data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"]'
+                );
+                if (!link) return;
+                if (window.parent.innerWidth < MOBILE_BREAKPOINT) {
+                    setTimeout(collapseSidebar, 150);
+                }
+            }
+
+            // Delegate on document instead of binding to the links directly -
+            // Streamlit tears down and rebuilds the sidebar's DOM nodes on
+            // every navigation, but window.parent.document itself persists
+            // across those reruns, so a listener attached to it survives.
+            // The flag stops it from being attached again on every rerun
+            // (this script itself re-executes each time, in a fresh iframe).
+            if (!doc.__navAutoCollapseAttached) {
+                doc.__navAutoCollapseAttached = true;
+                doc.addEventListener('click', onClick, true);
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _owner_avatar_color(owner):
     digest = sum(ord(c) for c in owner)
     return PALETTE["categorical"][digest % len(PALETTE["categorical"])]
