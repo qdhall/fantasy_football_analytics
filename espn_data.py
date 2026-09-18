@@ -1,5 +1,6 @@
 """Shared ESPN league data loading and calculation helpers used by every page."""
 
+import concurrent.futures
 import pickle
 from datetime import datetime
 from pathlib import Path
@@ -556,16 +557,27 @@ def _compute_season_box_scores(league_id, year, espn_s2, swid):
     """{week: [{home_owner, home_score, home_lineup, away_owner, away_score,
     away_lineup}, ...]} for every week of one season - the full starter+bench
     detail behind every matchup, used for the Matchup History page's
-    week-by-week drill-down."""
+    week-by-week drill-down.
+
+    Each week is an independent, read-only HTTP GET (confirmed against the
+    espn_api source: box_scores() and its two helper calls build fresh local
+    dicts from a plain module-level requests.get() every time - no shared
+    mutable state on the League object or its request wrapper gets written),
+    so fetching every week concurrently instead of one at a time is safe and
+    cuts wall time roughly to the slowest single week instead of the sum of
+    all of them - the single biggest lever for this app's live-data latency,
+    since a full season is 1-17+ of these calls."""
     weeks = {}
     try:
         league = League(league_id, year, espn_s2=espn_s2, swid=swid)
-        for week in range(1, _last_completed_week(league, year) + 1):
+        last_week = _last_completed_week(league, year)
+
+        def _fetch_week(week):
             try:
                 box_scores = league.box_scores(week=week)
             except Exception as e:
                 print(f"Error loading box scores {year} week {week}: {e}")
-                continue
+                return week, []
             matchups = []
             for bs in box_scores:
                 if bs.home_team is None or bs.away_team is None:
@@ -580,7 +592,12 @@ def _compute_season_box_scores(league_id, year, espn_s2, swid):
                     'away_score': bs.away_score,
                     'away_lineup': _lineup_players(bs.away_lineup),
                 })
-            weeks[week] = matchups
+            return week, matchups
+
+        if last_week >= 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(last_week, 8)) as executor:
+                for week, matchups in executor.map(_fetch_week, range(1, last_week + 1)):
+                    weeks[week] = matchups
     except Exception as e:
         print(f"Error loading {year} for season box scores: {e}")
 
@@ -1342,12 +1359,29 @@ def _compute_front_office_year(league_id, year, espn_s2, swid):
     # player_id -> accumulated actual/projected/weeks while rostered, this season
     player_season = {}
 
-    for week in range(1, _last_completed_week(league, year) + 1):
+    # Fetching is the slow, network-bound part - each week is an independent
+    # read-only request (see _compute_season_box_scores' docstring for why
+    # that's safe to parallelize), so pull every week concurrently and only
+    # loop sequentially over the results, so every accumulation below (coach
+    # weekly_log, player_season's weekly list) still lands in real week
+    # order regardless of which fetch happens to finish first.
+    last_week = _last_completed_week(league, year)
+    box_scores_by_week = {}
+
+    def _fetch_week(week):
         try:
-            box_scores = league.box_scores(week=week)
+            return week, league.box_scores(week=week)
         except Exception as e:
             print(f"Error loading box scores {year} week {week}: {e}")
-            continue
+            return week, []
+
+    if last_week >= 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(last_week, 8)) as executor:
+            for week, box_scores in executor.map(_fetch_week, range(1, last_week + 1)):
+                box_scores_by_week[week] = box_scores
+
+    for week in range(1, last_week + 1):
+        box_scores = box_scores_by_week[week]
 
         for bs in box_scores:
             # Boom-win detection - kept independent of the per-team loop below

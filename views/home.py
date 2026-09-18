@@ -13,6 +13,7 @@ from common import (
     render_trivia_carousel,
 )
 from espn_data import (
+    build_season_box_scores,
     get_credentials,
     get_current_season_snapshot,
     get_current_week_matchups,
@@ -20,7 +21,12 @@ from espn_data import (
 )
 from home_stats import compute_award_races
 from league_stats import compute_league_trivia
-from matchup_predictor_stats import compute_espn_only_prediction, compute_matchup_prediction, estimate_score_std
+from matchup_predictor_stats import (
+    compute_ats_records,
+    compute_espn_only_prediction,
+    compute_matchup_prediction,
+    estimate_score_std,
+)
 from odds_data import fetch_current_nfl_odds, parse_player_props, parse_team_implied_totals
 
 configure_page("Fantasy Football Analytics")
@@ -69,13 +75,21 @@ st.markdown("---")
 # cost on every single interaction.
 league_id, espn_s2, swid = get_credentials()
 
+# Shares its cache key with Matchup History/Rumor Mill/Matchup Predictor's
+# own current-season box-score fetch - whichever page hits it first this
+# session pays the cost once, everyone else reads the session-cached result.
+box_score_cache = st.session_state.setdefault('season_box_scores_cache', {})
+
 if 'home_live_data' not in st.session_state:
     with st.spinner(f"Pulling live {current_year} matchups, odds, and standings..."):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
             odds_future = executor.submit(fetch_current_nfl_odds)
             scoring_future = executor.submit(get_league_scoring_settings, league_id, current_year, espn_s2, swid)
             snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
+            box_scores_future = None
+            if current_year not in box_score_cache:
+                box_scores_future = executor.submit(build_season_box_scores, league_id, current_year, espn_s2, swid)
 
             st.session_state['home_live_data'] = {
                 'matchups': matchups_future.result(),
@@ -83,11 +97,23 @@ if 'home_live_data' not in st.session_state:
                 'scoring_settings': scoring_future.result(),
                 'snapshot': snapshot_future.result(),
             }
+            if box_scores_future is not None:
+                box_score_cache[current_year] = box_scores_future.result()
+elif current_year not in box_score_cache:
+    with st.spinner("Pulling this season's box scores for Against the Spread records..."):
+        box_score_cache[current_year] = build_season_box_scores(league_id, current_year, espn_s2, swid)
 
 live_data = st.session_state['home_live_data']
 # current_season_snapshot is also used standalone elsewhere in this session
 # (e.g. League News' Rumor Mill) - keep that key populated too.
 st.session_state['current_season_snapshot'] = live_data['snapshot']
+
+# ATS records are scoped to the current season only (see matchup_predictor.py
+# for the same change and its reasoning) - cheap now that it's one season
+# instead of the whole 2019-2026 history.
+if 'home_ats' not in st.session_state:
+    st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
+ats_records = st.session_state['home_ats']
 
 # --- Matchups and Predictions carousel ------------------------------------------
 header_col, link_col = st.columns([5, 1.4])
@@ -112,7 +138,7 @@ if matchups:
         espn_pred = compute_espn_only_prediction(m['home_projected'], m['away_projected'], score_std)
         predictions.append((m, vegas_pred, espn_pred))
 
-    render_matchup_carousel(predictions)
+    render_matchup_carousel(predictions, ats_records)
 else:
     st.info("No live matchups yet this week.", icon=":material/schedule:")
 

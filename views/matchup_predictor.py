@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import pandas as pd
 import streamlit as st
 
@@ -59,8 +61,26 @@ TIER_LABELS = {
     'espn_only': 'ESPN projection only',
 }
 
-with st.spinner("Loading this week's matchups..."):
-    matchups = get_current_week_matchups(league_id, 2026, espn_s2, swid)
+# This week's matchups, Vegas odds, scoring settings, and (unless another
+# page already cached it this session) the current season's box scores for
+# ATS records are four independent live calls - same fix as Home's live-data
+# section: run them concurrently instead of one after another, since none
+# of them need each other's result.
+box_score_cache = st.session_state.setdefault('season_box_scores_cache', {})
+with st.spinner("Loading this week's matchups, odds, and Against-the-Spread records..."):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        matchups_future = executor.submit(get_current_week_matchups, league_id, 2026, espn_s2, swid)
+        odds_future = executor.submit(fetch_current_nfl_odds)
+        scoring_future = executor.submit(get_league_scoring_settings, league_id, 2026, espn_s2, swid)
+        box_scores_future = None
+        if 2026 not in box_score_cache:
+            box_scores_future = executor.submit(build_season_box_scores, league_id, 2026, espn_s2, swid)
+
+        matchups = matchups_future.result()
+        odds_events = odds_future.result()
+        scoring_settings = scoring_future.result()
+        if box_scores_future is not None:
+            box_score_cache[2026] = box_scores_future.result()
 
 if not matchups:
     st.info("No live matchups found for the current week yet.", icon=":material/schedule:")
@@ -68,24 +88,16 @@ if not matchups:
     render_footer()
     st.stop()
 
-with st.spinner("Pulling Vegas odds..."):
-    odds_events = fetch_current_nfl_odds()
-    odds_lookup = parse_player_props(odds_events)
-    team_implied_totals = parse_team_implied_totals(odds_events)
-
-scoring_settings = get_league_scoring_settings(league_id, 2026, espn_s2, swid)
+odds_lookup = parse_player_props(odds_events)
+team_implied_totals = parse_team_implied_totals(odds_events)
 score_std = estimate_score_std(owners)
 
+# ATS records are scoped to the current season only - the full 2019-2026
+# history was a one-time crunch that only ever gets slower as more seasons
+# pile up, for a record that's meant to answer "who's actually beating
+# their own projection lately," not an all-time leaderboard.
 if 'matchup_predictor_ats' not in st.session_state:
-    with st.spinner(
-        "Crunching every historical week's actual-vs-projected score (2019-2026) for "
-        "Against the Spread records... this can take a few minutes the first time"
-    ):
-        all_years_box_scores = {
-            year: build_season_box_scores(league_id, year, espn_s2, swid)
-            for year in range(2019, 2027)
-        }
-        st.session_state['matchup_predictor_ats'] = compute_ats_records(all_years_box_scores)
+    st.session_state['matchup_predictor_ats'] = compute_ats_records({2026: box_score_cache[2026]})
 
 ats_records = st.session_state['matchup_predictor_ats']
 
