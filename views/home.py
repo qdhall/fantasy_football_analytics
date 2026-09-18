@@ -82,73 +82,44 @@ ensure_synced(league_id, current_year, espn_s2, swid)
 if current_year not in box_score_cache:
     box_score_cache[current_year] = get_season_box_scores(league_id, current_year)
 
-if 'home_live_data' not in st.session_state:
-    with st.spinner(f"Pulling live {current_year} matchups, odds, and standings..."):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
-            odds_future = executor.submit(fetch_current_nfl_odds)
-            snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
 
-            st.session_state['home_live_data'] = {
-                'matchups': matchups_future.result(),
-                'odds_events': odds_future.result(),
-                'scoring_settings': get_scoring_settings(league_id, current_year),
-                'snapshot': snapshot_future.result(),
-            }
+def _render_matchups_section(matchups, odds_events, scoring_settings, ats_records):
+    matchups_col, link_col = st.columns([5, 1.4])
+    with matchups_col:
+        st.markdown("### :material/insights: Matchups and Predictions")
+        st.caption("This week's Vegas line vs. ESPN's own projection, cycling automatically.")
+    with link_col:
+        st.write("")
+        st.page_link("views/matchup_predictor.py", label="Full Scoreboard", icon=":material/insights:")
 
-live_data = st.session_state['home_live_data']
-# current_season_snapshot is also used standalone elsewhere in this session
-# (e.g. League News' Rumor Mill) - keep that key populated too.
-st.session_state['current_season_snapshot'] = live_data['snapshot']
+    if matchups:
+        odds_lookup = parse_player_props(odds_events)
+        team_implied_totals = parse_team_implied_totals(odds_events)
+        score_std = estimate_score_std(owners)
 
-# ATS records are scoped to the current season only (see matchup_predictor.py
-# for the same change and its reasoning) - cheap now that it's one season
-# instead of the whole 2019-2026 history.
-if 'home_ats' not in st.session_state:
-    st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
-ats_records = st.session_state['home_ats']
+        predictions = []
+        for m in matchups:
+            vegas_pred = compute_matchup_prediction(
+                m['home_lineup'], m['away_lineup'], odds_lookup, scoring_settings, team_implied_totals, score_std)
+            espn_pred = compute_espn_only_prediction(m['home_projected'], m['away_projected'], score_std)
+            predictions.append((m, vegas_pred, espn_pred))
 
-# --- Matchups and Predictions carousel ------------------------------------------
-header_col, link_col = st.columns([5, 1.4])
-with header_col:
-    st.markdown("### :material/insights: Matchups and Predictions")
-    st.caption("This week's Vegas line vs. ESPN's own projection, cycling automatically.")
-with link_col:
-    st.write("")
-    st.page_link("views/matchup_predictor.py", label="Full Scoreboard", icon=":material/insights:")
+        render_matchup_carousel(predictions, ats_records)
+    else:
+        st.info("No live matchups yet this week.", icon=":material/schedule:")
 
-matchups = live_data['matchups']
-if matchups:
-    odds_lookup = parse_player_props(live_data['odds_events'])
-    team_implied_totals = parse_team_implied_totals(live_data['odds_events'])
-    scoring_settings = live_data['scoring_settings']
-    score_std = estimate_score_std(owners)
 
-    predictions = []
-    for m in matchups:
-        vegas_pred = compute_matchup_prediction(
-            m['home_lineup'], m['away_lineup'], odds_lookup, scoring_settings, team_implied_totals, score_std)
-        espn_pred = compute_espn_only_prediction(m['home_projected'], m['away_projected'], score_std)
-        predictions.append((m, vegas_pred, espn_pred))
+def _render_awards_section(snapshot):
+    st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
 
-    render_matchup_carousel(predictions, ats_records)
-else:
-    st.info("No live matchups yet this week.", icon=":material/schedule:")
+    if not snapshot['season_started']:
+        st.info(
+            f"The {current_year} season hasn't kicked off yet - once Week 1 is in the books, "
+            f"this section will show the live Playoff Race, Top Scoring Teams, and MVP Race.",
+            icon=":material/campaign:",
+        )
+        return
 
-st.markdown("---")
-
-# --- Award races & playoff picture ---------------------------------------------
-st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
-
-snapshot = live_data['snapshot']
-
-if not snapshot['season_started']:
-    st.info(
-        f"The {current_year} season hasn't kicked off yet - once Week 1 is in the books, "
-        f"this section will show the live Playoff Race, Top Scoring Teams, and MVP Race.",
-        icon=":material/campaign:",
-    )
-else:
     races = compute_award_races(snapshot)
 
     col1, col2, col3 = st.columns(3)
@@ -177,6 +148,57 @@ else:
             [("Pts", lambda r: f"{r['points']:,.1f}")],
             name_key='player', subtitle_key='owner', key_prefix='mvp',
         )
+
+
+if 'home_live_data' in st.session_state:
+    # Repeat visit this session - already have everything, just render normally.
+    live_data = st.session_state['home_live_data']
+    if 'home_ats' not in st.session_state:
+        st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
+    _render_matchups_section(
+        live_data['matchups'], live_data['odds_events'], live_data['scoring_settings'], st.session_state['home_ats'])
+    st.markdown("---")
+    _render_awards_section(live_data['snapshot'])
+else:
+    # First load this session: matchups/odds and the season snapshot are
+    # independent live calls with different typical latency (snapshot is
+    # usually the fastest of the three). Reserving both sections' slots with
+    # st.empty() up front and filling each one the moment ITS OWN dependency
+    # resolves - rather than gating both behind the single slowest call -
+    # means Award Races can appear noticeably before the matchups carousel
+    # does, instead of the whole bottom half of the page waiting on whichever
+    # of the three calls happens to be slowest.
+    matchups_slot = st.empty()
+    with matchups_slot:
+        st.markdown("### :material/insights: Matchups and Predictions")
+        st.info("Loading this week's matchups and odds...", icon=":material/hourglass_top:")
+    st.markdown("---")
+    awards_slot = st.empty()
+    with awards_slot:
+        st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
+        st.info("Loading live standings...", icon=":material/hourglass_top:")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
+        odds_future = executor.submit(fetch_current_nfl_odds)
+        snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
+
+        snapshot = snapshot_future.result()
+        st.session_state['current_season_snapshot'] = snapshot
+        with awards_slot.container():
+            _render_awards_section(snapshot)
+
+        matchups = matchups_future.result()
+        odds_events = odds_future.result()
+        scoring_settings = get_scoring_settings(league_id, current_year)
+        st.session_state['home_live_data'] = {
+            'matchups': matchups, 'odds_events': odds_events,
+            'scoring_settings': scoring_settings, 'snapshot': snapshot,
+        }
+        if 'home_ats' not in st.session_state:
+            st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
+        with matchups_slot.container():
+            _render_matchups_section(matchups, odds_events, scoring_settings, st.session_state['home_ats'])
 
 render_sidebar_info()
 render_footer()
