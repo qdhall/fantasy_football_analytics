@@ -1012,8 +1012,8 @@ VEGAS_THEME = {
     'accent': PALETTE['categorical'][3],  # gold
     'pill_bg': PALETTE['categorical'][3],
     'pill_text': '#1a1206',
-    'bar_home': PALETTE['categorical'][3],
-    'bar_away': PALETTE['categorical'][2],
+    'bar_favorite': PALETTE['categorical'][3],
+    'bar_underdog': PALETTE['categorical'][2],
 }
 ESPN_THEME = {
     'bg': PALETTE['surface'],
@@ -1023,8 +1023,8 @@ ESPN_THEME = {
     'accent': PALETTE['ink_secondary'],
     'pill_bg': PALETTE['page'],
     'pill_text': PALETTE['ink_muted'],
-    'bar_home': PALETTE['categorical'][0],
-    'bar_away': PALETTE['categorical'][1],
+    'bar_favorite': PALETTE['categorical'][0],
+    'bar_underdog': PALETTE['categorical'][1],
 }
 
 
@@ -1102,6 +1102,9 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
             f'</div>'
         )
 
+    home_bar_color = theme['bar_favorite'] if home_favorite else theme['bar_underdog']
+    away_bar_color = theme['bar_underdog'] if home_favorite else theme['bar_favorite']
+
     home_block = _team_block(
         m['home_team_name'], m['home_owner'], pred['home_projected'], m.get('home_score'),
         ml_home, espn_pred['home_projected'] if espn_pred else None, home_favorite, 'left')
@@ -1130,8 +1133,8 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
         f'</div>'
         f'<div style="margin-top:10px;">'
         f'<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:{theme["border"]}44;">'
-        f'<div style="width:{pred["win_prob_home"] * 100:.2f}%;background:{theme["bar_home"]}"></div>'
-        f'<div style="width:{pred["win_prob_away"] * 100:.2f}%;background:{theme["bar_away"]}"></div>'
+        f'<div style="width:{pred["win_prob_home"] * 100:.2f}%;background:{home_bar_color}"></div>'
+        f'<div style="width:{pred["win_prob_away"] * 100:.2f}%;background:{away_bar_color}"></div>'
         f'</div>'
         f'<div style="display:flex;justify-content:space-between;font-size:0.7rem;color:{theme["ink_muted"]};'
         f'margin-top:4px;"><span>{pred["win_prob_home"] * 100:.1f}%</span>'
