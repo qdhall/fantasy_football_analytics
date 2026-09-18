@@ -83,7 +83,7 @@ if current_year not in box_score_cache:
     box_score_cache[current_year] = get_season_box_scores(league_id, current_year)
 
 
-def _render_matchups_section(matchups, odds_events, scoring_settings, ats_records):
+def _render_matchups_header():
     matchups_col, link_col = st.columns([5, 1.4])
     with matchups_col:
         st.markdown("### :material/insights: Matchups and Predictions")
@@ -92,6 +92,8 @@ def _render_matchups_section(matchups, odds_events, scoring_settings, ats_record
         st.write("")
         st.page_link("views/matchup_predictor.py", label="Full Scoreboard", icon=":material/insights:")
 
+
+def _render_matchups_section(matchups, odds_events, scoring_settings, ats_records):
     if matchups:
         odds_lookup = parse_player_props(odds_events)
         team_implied_totals = parse_team_implied_totals(odds_events)
@@ -109,9 +111,11 @@ def _render_matchups_section(matchups, odds_events, scoring_settings, ats_record
         st.info("No live matchups yet this week.", icon=":material/schedule:")
 
 
-def _render_awards_section(snapshot):
+def _render_awards_header():
     st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
 
+
+def _render_awards_section(snapshot):
     if not snapshot['season_started']:
         st.info(
             f"The {current_year} season hasn't kicked off yet - once Week 1 is in the books, "
@@ -150,54 +154,54 @@ def _render_awards_section(snapshot):
         )
 
 
+_render_matchups_header()
+matchups_slot = st.empty()
+st.markdown("---")
+_render_awards_header()
+awards_slot = st.empty()
+
 if 'home_live_data' in st.session_state:
     # Repeat visit this session - already have everything, just render normally.
     live_data = st.session_state['home_live_data']
     if 'home_ats' not in st.session_state:
         st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
-    _render_matchups_section(
-        live_data['matchups'], live_data['odds_events'], live_data['scoring_settings'], st.session_state['home_ats'])
-    st.markdown("---")
-    _render_awards_section(live_data['snapshot'])
+    with matchups_slot.container():
+        _render_matchups_section(
+            live_data['matchups'], live_data['odds_events'], live_data['scoring_settings'], st.session_state['home_ats'])
+    with awards_slot.container():
+        _render_awards_section(live_data['snapshot'])
 else:
     # First load this session: matchups/odds and the season snapshot are
     # independent live calls with different typical latency (snapshot is
-    # usually the fastest of the three). Reserving both sections' slots with
-    # st.empty() up front and filling each one the moment ITS OWN dependency
-    # resolves - rather than gating both behind the single slowest call -
-    # means Award Races can appear noticeably before the matchups carousel
-    # does, instead of the whole bottom half of the page waiting on whichever
-    # of the three calls happens to be slowest.
-    matchups_slot = st.empty()
-    with matchups_slot:
-        st.markdown("### :material/insights: Matchups and Predictions")
-        st.info("Loading this week's matchups and odds...", icon=":material/hourglass_top:")
-    st.markdown("---")
-    awards_slot = st.empty()
-    with awards_slot:
-        st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
-        st.info("Loading live standings...", icon=":material/hourglass_top:")
-
+    # usually the fastest of the three). Both slots are reserved up front
+    # (right under their already-visible headers) and each is filled the
+    # moment ITS OWN dependency resolves, spinner-and-all matching every
+    # other page's st.spinner style - rather than gating both behind the
+    # single slowest call, which used to mean Award Races sat blank exactly
+    # as long as the matchups carousel did even though its own data was
+    # usually ready well before that.
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
         odds_future = executor.submit(fetch_current_nfl_odds)
         snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
 
-        snapshot = snapshot_future.result()
-        st.session_state['current_season_snapshot'] = snapshot
         with awards_slot.container():
+            with st.spinner("Loading live standings..."):
+                snapshot = snapshot_future.result()
+            st.session_state['current_season_snapshot'] = snapshot
             _render_awards_section(snapshot)
 
-        matchups = matchups_future.result()
-        odds_events = odds_future.result()
-        scoring_settings = get_scoring_settings(league_id, current_year)
-        st.session_state['home_live_data'] = {
-            'matchups': matchups, 'odds_events': odds_events,
-            'scoring_settings': scoring_settings, 'snapshot': snapshot,
-        }
-        if 'home_ats' not in st.session_state:
-            st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
         with matchups_slot.container():
+            with st.spinner("Loading this week's matchups and odds..."):
+                matchups = matchups_future.result()
+                odds_events = odds_future.result()
+                scoring_settings = get_scoring_settings(league_id, current_year)
+            st.session_state['home_live_data'] = {
+                'matchups': matchups, 'odds_events': odds_events,
+                'scoring_settings': scoring_settings, 'snapshot': snapshot,
+            }
+            if 'home_ats' not in st.session_state:
+                st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
             _render_matchups_section(matchups, odds_events, scoring_settings, st.session_state['home_ats'])
 
 render_sidebar_info()
