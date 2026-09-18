@@ -7,9 +7,10 @@ slate costs about 16 objects against a 2,500/month free allowance.
 
 Odds are live, constantly-moving data - unlike espn_data.py's season-final
 disk/R2 cache (built for data that's permanently done and safe to cache
-forever), this module only ever caches for the lifetime of one Streamlit
-session, via st.session_state, the same lifetime already used for
-get_current_season_snapshot's live ESPN data.
+forever), this module only short-TTL-caches (see fetch_current_nfl_odds),
+long enough to survive a burst of Streamlit reruns without re-hitting the
+API on every single one, short enough to still track real line movement
+and live scores within a minute or so.
 """
 
 import re
@@ -42,16 +43,29 @@ def get_odds_api_key():
     return st.secrets.get("sportsgameodds_api_key")
 
 
+@st.cache_data(ttl=300)
 def fetch_current_nfl_odds():
-    """This week's NFL events with odds - always fetched live, never cached
-    (same reasoning as espn_data.get_current_season_snapshot: this is
-    in-progress data with no "final" version, so a session-lifetime cache
-    would go stale as lines move and games complete over the course of a
-    week). The free tier's billing (per event, not per request) has huge
-    headroom for this - see espn_data.py's module docstring reasoning.
-    Returns the raw list of event dicts from the API, or [] if the key is
-    missing or the request fails (callers should treat that as "no Vegas
-    signal available" and fall back to ESPN-only projections, not an error)."""
+    """This week's NFL events with odds. Session-lifetime caching (the
+    original approach) went stale for anyone leaving a tab open for hours as
+    lines moved and games completed; removing caching entirely instead had
+    every single Streamlit rerun - every widget click on the Matchup
+    Predictor page, not just a fresh page load - re-hit the API, which
+    quietly blew through SportsGameOdds' free-tier RATE limit (requests per
+    minute; separate from, and much stricter than, the per-event monthly
+    quota the module docstring above is about) and left every call
+    returning a 429 with an empty event list - silently collapsing every
+    player's Vegas tier down to an ESPN-only projection with no signal at
+    all. st.cache_data's TTL is the fix that satisfies both constraints:
+    it's process-wide (shared across every session hitting this app, not
+    per-session), so a burst of reruns/pages/users within the same window
+    costs one real request. 5 minutes gives real usage (multiple league
+    members clicking around at once, not just one dev script hammering it)
+    a comfortable safety margin, while still tracking real line movement and
+    live scores through the week - Vegas lines don't meaningfully move
+    minute-to-minute anyway. Returns the raw list of event dicts from the
+    API, or [] if the key is missing or the request fails (callers should
+    treat that as "no Vegas signal available" and fall back to ESPN-only
+    projections, not an error)."""
     api_key = get_odds_api_key()
     if not api_key:
         return []
