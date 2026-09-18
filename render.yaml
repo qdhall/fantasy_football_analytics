@@ -3,10 +3,14 @@
 # dashboard, instead of clicking through the individual settings by hand.
 #
 # Secrets (league_id/espn_s2/swid, R2 credentials, sportsgameodds_api_key)
-# are deliberately NOT here - they're added as a Render "Secret File" at
-# path .streamlit/secrets.toml (same TOML format as local dev), which is
-# the one piece of this setup that has to be done by hand in the Render
-# dashboard, since it holds real credentials.
+# are deliberately NOT here - they're added as a Render "Secret File" named
+# exactly `secrets.toml` (same TOML content as local dev's
+# .streamlit/secrets.toml), the one piece of this setup that has to be done
+# by hand in the Render dashboard, since it holds real credentials. Render
+# doesn't support subdirectory paths for Secret Files - every one lands flat
+# at the repo root (and at /etc/secrets/<filename>) - so the startCommand
+# below copies it into .streamlit/secrets.toml, the exact relative path
+# Streamlit's st.secrets actually looks for, before launching the app.
 services:
   - type: web
     name: fantasy-football-analytics
@@ -15,7 +19,7 @@ services:
     region: oregon
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run fantasy_football_dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
+    startCommand: mkdir -p .streamlit && cp secrets.toml .streamlit/secrets.toml && streamlit run fantasy_football_dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
     healthCheckPath: /_stcore/health
     envVars:
       - key: PYTHON_VERSION
