@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from common import PALETTE, configure_page, get_league_history, render_footer, render_sidebar_info
-from espn_data import build_season_box_scores, get_credentials
+from espn_data import build_season_box_scores, get_credentials, get_slot_structure, optimal_lineup_points_from_dicts
 
 configure_page("Matchup History")
 
@@ -71,6 +71,13 @@ def _get_season_box_scores(year):
     return cache[year]
 
 
+def _get_slot_structure(year):
+    cache = st.session_state.setdefault('slot_structure_cache', {})
+    if year not in cache:
+        cache[year] = get_slot_structure(league_id, year, espn_s2, swid)
+    return cache[year]
+
+
 def _lineup_table(players, show_projected):
     if not players:
         st.caption("No players.")
@@ -94,7 +101,15 @@ def _lineup_table(players, show_projected):
     st.dataframe(styled, width='stretch', hide_index=True)
 
 
-def render_box_score(matchup):
+def _optimal_points(lineup, dedicated_slots, flex_slots):
+    starters = [p for p in lineup if p['slot'] not in ('BE', 'IR')]
+    bench = [p for p in lineup if p['slot'] in ('BE', 'IR')]
+    if not dedicated_slots and not flex_slots:
+        return sum(p['points'] for p in starters)
+    return optimal_lineup_points_from_dicts(starters + bench, dedicated_slots, flex_slots)
+
+
+def render_box_score(matchup, year):
     # ESPN stops serving real projected_points for a week once enough time has
     # passed (recent seasons return real numbers, older ones all come back as
     # a flat 0.0) - showing "Projected: 0.0" for every player on an old box
@@ -110,11 +125,30 @@ def render_box_score(matchup):
             "ESPN no longer serves pre-game projections for a matchup this old - "
             "only actual points are shown below.")
 
+    # What each team's BEST possible lineup (starters + bench, picked with
+    # hindsight) would have scored - answers "who would've won if both teams
+    # started their optimal lineup", reusing the same greedy-fill selection
+    # already proven correct for Coach Rankings (espn_data.optimal_lineup_points_from_dicts).
+    dedicated_slots, flex_slots = _get_slot_structure(year)
+    home_optimal = _optimal_points(matchup['home_lineup'], dedicated_slots, flex_slots)
+    away_optimal = _optimal_points(matchup['away_lineup'], dedicated_slots, flex_slots)
+
+    actual_winner = matchup['home_owner'] if matchup['home_score'] > matchup['away_score'] else matchup['away_owner']
+    optimal_winner = matchup['home_owner'] if home_optimal > away_optimal else matchup['away_owner']
+    if matchup['home_score'] != matchup['away_score'] and actual_winner != optimal_winner:
+        st.warning(
+            f"If both teams had started their optimal lineup, this game would have flipped: "
+            f"**{optimal_winner}** would have won instead of {actual_winner}.",
+            icon=":material/bolt:",
+        )
+
     sides = [
-        (matchup['home_owner'], matchup['home_score'], matchup['away_owner'], matchup['away_score'], matchup['home_lineup']),
-        (matchup['away_owner'], matchup['away_score'], matchup['home_owner'], matchup['home_score'], matchup['away_lineup']),
+        (matchup['home_owner'], matchup['home_score'], matchup['away_owner'], matchup['away_score'],
+         matchup['home_lineup'], home_optimal),
+        (matchup['away_owner'], matchup['away_score'], matchup['home_owner'], matchup['home_score'],
+         matchup['away_lineup'], away_optimal),
     ]
-    for owner, score, opp_owner, opp_score, lineup in sides:
+    for owner, score, opp_owner, opp_score, lineup, optimal_points in sides:
         won = score > opp_score
         score_color = PALETTE['categorical'][0] if won else PALETTE['ink_muted']
         st.markdown(
@@ -125,6 +159,10 @@ def render_box_score(matchup):
             f'</div>',
             unsafe_allow_html=True,
         )
+        left_on_bench = optimal_points - score
+        bench_note = "no points left on the bench" if left_on_bench <= 0.05 else f"{left_on_bench:,.1f} left on the bench"
+        st.caption(f"Optimal lineup: {optimal_points:,.1f} pts ({bench_note})")
+
         starters = [p for p in lineup if p['slot'] not in ('BE', 'IR')]
         bench = [p for p in lineup if p['slot'] in ('BE', 'IR')]
         st.caption("Starters")
@@ -156,7 +194,7 @@ def _box_score_picker(games, owner_a, key_prefix):
         opponent = next(g['opponent'] for g in games if g['year'] == year and g['week'] == week)
         matchup = _find_matchup(year, week, owner_a, opponent)
         if matchup:
-            render_box_score(matchup)
+            render_box_score(matchup, year)
         else:
             st.warning("Couldn't find lineup detail for that week - box score data may not be available for this season.")
 

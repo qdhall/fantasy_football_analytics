@@ -162,6 +162,173 @@ def _combine_by_owner(raw):
     return combined
 
 
+def _current_season_streak(rec, year):
+    """(result, length) for an owner's trailing run of same-result games
+    within `year` only, sorted by week - e.g. ('W', 3) for three straight
+    wins. (None, 0) if they haven't played `year` at all or have no games
+    yet (the weeks that exist are already bounded to completed ones by
+    espn_data._last_completed_week, so this only ever reflects real,
+    decided games)."""
+    season_games = sorted(
+        (g for g in rec['game_log'] if g['year'] == year),
+        key=lambda g: g['week'],
+    )
+    if not season_games:
+        return None, 0
+    result = season_games[-1]['result']
+    length = 0
+    for g in reversed(season_games):
+        if g['result'] != result:
+            break
+        length += 1
+    return result, length
+
+
+# Rumors are attributed to a fixed set of "insider account" handles by
+# category, not to any real league member - these are gossip ABOUT owners,
+# never gossip framed as coming FROM one.
+_RUMOR_HANDLES = {
+    'trade': '@LeagueWire',
+    'waiver': '@WaiverWatch',
+    'streak': '@HotColdTracker',
+    'playoff_race': '@PlayoffPulse',
+}
+
+# A waiver pickup only reads as rumor-worthy "tea" past some real spend - a
+# $0 free-agent add isn't gossip, a $40 FAAB bid on a bench piece is.
+BIG_WAIVER_BID_THRESHOLD = 15
+
+# Below this point-differential, a trade grade reads as noise rather than a
+# real early lean - the rumor hedges instead of crowning a winner.
+TRADE_GRADE_MARGIN = 3.0
+
+
+def compute_player_season_totals(season_box_scores):
+    """{player_name: total fantasy points scored so far this season}, summed
+    across every completed week's box scores (starters and bench both, since
+    a player's real stat line doesn't care whether they were benched) - lets
+    the Rumor Mill grade a trade by actual, on-field production instead of
+    just announcing it happened. `season_box_scores` is the
+    {week: [matchup, ...]} shape espn_data.build_season_box_scores returns."""
+    totals = {}
+    for week_matchups in season_box_scores.values():
+        for m in week_matchups:
+            for lineup in (m['home_lineup'], m['away_lineup']):
+                for p in lineup:
+                    totals[p['name']] = totals.get(p['name'], 0.0) + p['points']
+    return totals
+
+
+def _trade_rumor(entry, player_points):
+    """A trade rumor takes a side, the way a real hot-take account would -
+    each traded player's season point total (player_points, from
+    compute_player_season_totals) decides who's actually winning the deal so
+    far, instead of just announcing that a trade happened."""
+    team_a, gave_a = entry['team_a'], entry['players_a']
+    team_b, gave_b = entry['team_b'], entry['players_b']
+    players_a_str = ", ".join(gave_a)
+    players_b_str = ", ".join(gave_b)
+    headline = f"🚨 TRADE ALERT: {team_a} sent {players_a_str} to {team_b} for {players_b_str}"
+
+    # team_a now holds gave_b, team_b now holds gave_a - compare what each
+    # side actually walked away with, not what they gave up.
+    pts_a_holds = sum(player_points.get(name, 0.0) for name in gave_b)
+    pts_b_holds = sum(player_points.get(name, 0.0) for name in gave_a)
+
+    if pts_a_holds == 0 and pts_b_holds == 0:
+        text = (
+            f"{headline}. Nobody's played a snap yet, so there's no verdict - just vibes. "
+            f"We'll be grading this one hard once the sample size catches up."
+        )
+    else:
+        diff = abs(pts_a_holds - pts_b_holds)
+        winner, winner_holds, winner_pts = (
+            (team_a, players_b_str, pts_a_holds) if pts_a_holds >= pts_b_holds
+            else (team_b, players_a_str, pts_b_holds)
+        )
+        loser, loser_holds, loser_pts = (
+            (team_b, players_a_str, pts_b_holds) if pts_a_holds >= pts_b_holds
+            else (team_a, players_b_str, pts_a_holds)
+        )
+        loser_first = loser.split()[0]
+        if diff < TRADE_GRADE_MARGIN:
+            text = (
+                f"{headline}. Early numbers are basically dead even ({winner_pts:.1f} to "
+                f"{loser_pts:.1f}) - too soon to crown a winner, but the receipts are being kept."
+            )
+        else:
+            text = (
+                f"{headline} - and it's not close. {winner_holds} has outscored {loser_holds} "
+                f"{winner_pts:.1f} to {loser_pts:.1f} this season. {loser_first}, you good?"
+            )
+    return {'handle': _RUMOR_HANDLES['trade'], 'category': 'trade', 'text': text}
+
+
+def compute_rumors(owners, award_races, recent_activity, current_year, player_points=None):
+    """The Rumor Mill's Twitter/X-style feed - every entry traces back to a
+    real, checkable fact (a real trade, a real waiver bid, a real in-season
+    streak, real standings), just delivered in a gossipy, hot-take voice
+    instead of the League Insider section's newspaper one. `player_points`
+    (compute_player_season_totals' output) is optional - without it, trade
+    rumors fall back to the "no verdict yet" framing. Returns
+    [{'handle', 'text', 'category'}, ...], newest/most-relevant first."""
+    rumors = []
+    player_points = player_points or {}
+
+    for entry in recent_activity:
+        if entry['kind'] == 'trade':
+            rumors.append(_trade_rumor(entry, player_points))
+        elif entry['kind'] == 'move' and entry['action'] == 'WAIVER ADDED' \
+                and entry['bid_amount'] >= BIG_WAIVER_BID_THRESHOLD:
+            rumors.append({
+                'handle': _RUMOR_HANDLES['waiver'],
+                'category': 'waiver',
+                'text': (
+                    f"👀 {entry['team']} just dropped ${entry['bid_amount']} in FAAB on "
+                    f"{entry['player']}. That's not a casual add - somebody's chasing a title."
+                ),
+            })
+
+    for owner, rec in owners.items():
+        if current_year not in rec['years']:
+            continue
+        result, length = _current_season_streak(rec, current_year)
+        if result == 'W' and length >= 3:
+            rumors.append({
+                'handle': _RUMOR_HANDLES['streak'],
+                'category': 'streak',
+                'text': f"🔥 {owner} has won {length} straight. Are we sure this league isn't rigged?",
+            })
+        elif result == 'L' and length >= 3:
+            rumors.append({
+                'handle': _RUMOR_HANDLES['streak'],
+                'category': 'streak',
+                'text': (
+                    f"💀 {owner} is on a {length}-game skid. Sources close to the team "
+                    f"describe the mood in the war room as \"not great.\""
+                ),
+            })
+
+    playoff_race = award_races.get('playoff_race', [])
+    playoff_team_count = award_races.get('playoff_team_count', 6)
+    if len(playoff_race) > playoff_team_count >= 1:
+        last_in = playoff_race[playoff_team_count - 1]
+        first_out = playoff_race[playoff_team_count]
+        games_back = (last_in['wins'] - last_in['losses']) - (first_out['wins'] - first_out['losses'])
+        if games_back <= 1:
+            rumors.append({
+                'handle': _RUMOR_HANDLES['playoff_race'],
+                'category': 'playoff_race',
+                'text': (
+                    f"😬 {last_in['owner']} is clinging to the final playoff spot with "
+                    f"{first_out['owner']} breathing down their neck. Expect some desperate "
+                    f"waiver moves before this is over."
+                ),
+            })
+
+    return rumors
+
+
 def compute_award_races(snapshot):
     """Playoff race, top-scoring teams, and MVP race from a live current-season
     snapshot (espn_data.get_current_season_snapshot). Assumes the caller has

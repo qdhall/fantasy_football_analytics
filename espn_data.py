@@ -541,6 +541,12 @@ def _lineup_players(lineup):
             'points': p.points,
             'projected': p.projected_points,
             'pro_team': p.proTeam,
+            # game_played is 0 or 100 (despite espn_api's "percent" docstring -
+            # it's actually just "has this player's real NFL game ended yet").
+            # Only meaningful for a live/current week; for a past completed
+            # week every player's game is long over, so this is always 100.
+            'game_played': getattr(p, 'game_played', 100),
+            'on_bye_week': getattr(p, 'on_bye_week', False),
         }
         for p in (lineup or [])
     ]
@@ -590,6 +596,62 @@ def build_season_box_scores(league_id, year, espn_s2, swid):
     data = _compute_season_box_scores(league_id, year, espn_s2, swid)
     _save_cached_year('season_box_scores', league_id, year, data)
     return data
+
+
+def get_current_week_matchups(league_id, year, espn_s2, swid):
+    """This week's matchups with full lineups - for the Matchup Predictor,
+    which needs the live/upcoming week specifically. This is the one place
+    in this file that deliberately does NOT use _last_completed_week: every
+    other caller wants to exclude the in-progress week (that's the bug fixed
+    elsewhere in this file), but a predictor's entire job is to project that
+    exact week, so league.box_scores() is called with no week argument -
+    espn_api then defaults to league.current_week itself. Never disk-cached
+    (always live, same reasoning as get_current_season_snapshot).
+
+    Returns [{home_owner, home_team_name, home_score, home_lineup, home_projected,
+    away_owner, away_team_name, away_score, away_lineup, away_projected}, ...]."""
+    matchups = []
+    try:
+        league = League(league_id, year, espn_s2=espn_s2, swid=swid)
+        box_scores = league.box_scores()
+        for bs in box_scores:
+            if bs.home_team is None or bs.away_team is None:
+                continue
+            if bs.home_team.team_id == bs.away_team.team_id:
+                continue  # bye week - ESPN schedules a team against itself
+            matchups.append({
+                'home_owner': get_owner_name(bs.home_team),
+                'home_team_name': bs.home_team.team_name,
+                'home_score': bs.home_score,
+                'home_lineup': _lineup_players(bs.home_lineup),
+                'home_projected': bs.home_projected,
+                'away_owner': get_owner_name(bs.away_team),
+                'away_team_name': bs.away_team.team_name,
+                'away_score': bs.away_score,
+                'away_lineup': _lineup_players(bs.away_lineup),
+                'away_projected': bs.away_projected,
+            })
+    except Exception as e:
+        print(f"Error loading current week matchups: {e}")
+
+    return matchups
+
+
+def get_league_scoring_settings(league_id, year, espn_s2, swid):
+    """{statID: points} for every scored stat in this league's actual
+    scoring rules - used to convert a Vegas per-stat prop line (yards,
+    touchdowns, receptions) into fantasy points using this league's real
+    rules instead of a generic PPR assumption. league.settings.scoring_format
+    is available via espn_api but unused anywhere else in this codebase."""
+    try:
+        league = League(league_id, year, espn_s2=espn_s2, swid=swid)
+        return {
+            str(item['id']): item['points']
+            for item in getattr(league.settings, 'scoring_format', [])
+        }
+    except Exception as e:
+        print(f"Error loading scoring settings: {e}")
+        return {}
 
 
 def _new_owner_record():
@@ -963,6 +1025,72 @@ def get_current_season_snapshot(league_id, year, espn_s2, swid):
     }
 
 
+def get_recent_activity(league_id, year, espn_s2, swid, size=25):
+    """Recent trades/waiver/free-agent moves for the League News page's
+    Trades & Acquisitions feed - always freshly fetched, never disk-cached
+    (same reasoning as get_current_season_snapshot: this is inherently "what
+    just happened" data, there's no "final" version of it to cache).
+
+    espn_api's Activity.actions is a list of (Team, action_str, Player,
+    bid_amount) tuples; a trade emits a TRADE_SENT/TRADE_RECEIVED pair per
+    player moved, all sharing the same Activity (and therefore the same
+    date) - grouped back into one clean entry here instead of leaving the
+    caller to reassemble a trade from disconnected rows. Every other action
+    is exactly one of 'FA ADDED', 'WAIVER ADDED', or 'DROPPED' (confirmed
+    against espn_api's own ACTIVITY_MAP - trades are the only multi-message
+    type).
+
+    Returns a list of dicts, newest first, each either:
+      {'date': datetime, 'kind': 'trade', 'team_a', 'players_a': [name,...],
+       'team_b', 'players_b': [name,...]}
+    or:
+      {'date': datetime, 'kind': 'move', 'team', 'action', 'player', 'bid_amount'}
+    """
+    from datetime import datetime as dt
+
+    entries = []
+    try:
+        league = League(league_id, year, espn_s2=espn_s2, swid=swid)
+        activities = league.recent_activity(size=size)
+    except Exception as e:
+        print(f"Error loading recent activity: {e}")
+        return []
+
+    for act in activities:
+        when = dt.fromtimestamp(act.date / 1000.0)
+        sent = [(team, player) for team, action, player, _bid in act.actions if action == 'TRADE_SENT']
+        received = [(team, player) for team, action, player, _bid in act.actions if action == 'TRADE_RECEIVED']
+        if sent and received:
+            # One trade can move several players each direction - group by
+            # which of the two teams sent them, not by individual player.
+            teams_in_trade = list(dict.fromkeys(team for team, _ in sent))
+            if len(teams_in_trade) == 2:
+                team_a, team_b = teams_in_trade
+                entries.append({
+                    'date': when,
+                    'kind': 'trade',
+                    'team_a': get_owner_name(team_a),
+                    'players_a': [p.name for team, p in sent if team == team_a],
+                    'team_b': get_owner_name(team_b),
+                    'players_b': [p.name for team, p in sent if team == team_b],
+                })
+            continue
+
+        for team, action, player, bid_amount in act.actions:
+            if not team or action in ('TRADE_SENT', 'TRADE_RECEIVED'):
+                continue
+            entries.append({
+                'date': when,
+                'kind': 'move',
+                'team': get_owner_name(team),
+                'action': action,
+                'player': player.name if hasattr(player, 'name') else str(player),
+                'bid_amount': bid_amount,
+            })
+
+    return entries
+
+
 def get_active_player_ids(league_id, year, espn_s2, swid, candidate_ids, min_projected_points=100.0):
     """Which of candidate_ids are still real, fantasy-RELEVANT NFL players as of
     `year` - a retired/unsigned player still exists in ESPN's historical data
@@ -1003,6 +1131,35 @@ def get_active_player_ids(league_id, year, espn_s2, swid, candidate_ids, min_pro
     return active_ids
 
 
+def _slot_structure_from_league(league):
+    """(dedicated_slots, flex_slots) from an already-constructed League
+    object, e.g. ([('QB', 1), ('RB', 2), ...], [('RB/WR/TE', 1)]) - factored
+    out of _compute_front_office_year (which had this inline) so it and
+    get_slot_structure share one implementation."""
+    slot_counts = league.settings.position_slot_counts
+    # 'D/ST' is a single dedicated position despite the slash in its name - the
+    # real multi-position flex slots are the only other slash-containing keys.
+    dedicated_slots = [(slot, count) for slot, count in slot_counts.items()
+                        if count > 0 and slot not in ('BE', 'IR', '') and ('/' not in slot or slot == 'D/ST')]
+    flex_slots = [(slot, count) for slot, count in slot_counts.items()
+                  if count > 0 and '/' in slot and slot != 'D/ST']
+    return dedicated_slots, flex_slots
+
+
+def get_slot_structure(league_id, year, espn_s2, swid):
+    """(dedicated_slots, flex_slots) for one league-year - for callers (like
+    the Matchup History optimal-lineup comparison) that don't already have a
+    League object in scope. _compute_front_office_year has its own and calls
+    _slot_structure_from_league directly instead, to avoid constructing a
+    second one."""
+    try:
+        league = League(league_id, year, espn_s2=espn_s2, swid=swid)
+    except Exception as e:
+        print(f"Error loading slot structure for {year}: {e}")
+        return [], []
+    return _slot_structure_from_league(league)
+
+
 def _optimal_lineup_ids(players, dedicated_slots, flex_slots):
     """Given a team's available players for one week (starters + bench, excluding IR)
     and the league's slot structure, return the set of player ids that would have
@@ -1033,6 +1190,42 @@ def _optimal_lineup_ids(players, dedicated_slots, flex_slots):
             by_position[p.position].remove(p)
 
     return used_ids
+
+
+def optimal_lineup_points_from_dicts(players, dedicated_slots, flex_slots):
+    """Same greedy-fill algorithm as _optimal_lineup_ids, adapted for the
+    dict-shaped lineup entries _lineup_players() produces (used throughout
+    Matchup History/Predictor) instead of raw BoxPlayer objects - those dicts
+    have no playerId, so names (unique within one team's own roster) stand
+    in as the identity key. Kept separate from _optimal_lineup_ids rather
+    than generalizing it, so the already-verified Coach Rankings path stays
+    untouched. Returns the optimal total points directly (callers only ever
+    want the number, not which players made the cut)."""
+    by_position = {}
+    for p in players:
+        by_position.setdefault(p['position'], []).append(p)
+    for plist in by_position.values():
+        plist.sort(key=lambda p: p['points'], reverse=True)
+
+    used_names = set()
+    total = 0.0
+    for slot, count in dedicated_slots:
+        pool = by_position.get(slot, [])
+        for p in pool[:count]:
+            used_names.add(p['name'])
+            total += p['points']
+        by_position[slot] = pool[count:]
+
+    for slot, count in flex_slots:
+        eligible_positions = slot.split('/')
+        leftover = [p for pos in eligible_positions for p in by_position.get(pos, [])]
+        leftover.sort(key=lambda p: p['points'], reverse=True)
+        for p in leftover[:count]:
+            used_names.add(p['name'])
+            total += p['points']
+            by_position[p['position']].remove(p)
+
+    return total
 
 
 def _new_gm_record():
@@ -1133,13 +1326,7 @@ def _compute_front_office_year(league_id, year, espn_s2, swid):
     if not league.draft or league.current_week == 0:
         return {}, {}, [], {}  # no draft recorded yet, or season hasn't started
 
-    slot_counts = league.settings.position_slot_counts
-    # 'D/ST' is a single dedicated position despite the slash in its name - the
-    # real multi-position flex slots are the only other slash-containing keys.
-    dedicated_slots = [(slot, count) for slot, count in slot_counts.items()
-                        if count > 0 and slot not in ('BE', 'IR', '') and ('/' not in slot or slot == 'D/ST')]
-    flex_slots = [(slot, count) for slot, count in slot_counts.items()
-                  if count > 0 and '/' in slot and slot != 'D/ST']
+    dedicated_slots, flex_slots = _slot_structure_from_league(league)
 
     draft_by_player = {
         pick.playerId: {

@@ -254,9 +254,52 @@ def inject_custom_css():
             font-size: 1.4rem;
         }}
 
-        /* Custom sidebar nav (see render_custom_nav) - a gold gradient + bevel +
-           shimmer icon per page, in place of the flat Material icons Streamlit's
-           built-in nav is limited to. */
+        /* League News page's Rumor Mill - a plain Twitter/X-style feed (an
+           avatar, a bold handle, a line of "tweet" text), deliberately
+           understated next to the comic-book League Insider section above
+           it on the same page, since this content is gossip-toned but still
+           grounded in real facts, not a second splash page. */
+        .rumor-feed {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .rumor-card {{
+            display: flex;
+            gap: 12px;
+            padding: 14px 4px;
+            border-bottom: 1px solid {PALETTE['gridline']};
+        }}
+        .rumor-card:last-child {{
+            border-bottom: none;
+        }}
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def inject_nav_css():
+    """Custom sidebar nav CSS (see render_custom_nav) - a gold gradient + bevel
+    + shimmer icon per page, in place of the flat Material icons Streamlit's
+    built-in nav is limited to.
+
+    Deliberately kept OUT of inject_custom_css/configure_page and instead
+    called directly from fantasy_football_dashboard.py, before
+    render_custom_nav() runs. inject_custom_css() only re-executes once the
+    destination page's own script runs (inside nav.run(), which happens
+    AFTER render_custom_nav() re-renders the sidebar for the new active
+    page) - Streamlit tears down and rebuilds the sidebar's DOM nodes on
+    every navigation (see render_nav_auto_collapse), so for that one render
+    the freshly-rebuilt nav briefly had no custom CSS at all, and browsers
+    fall back to Streamlit's native single-line/ellipsis nav-link styling -
+    visible as a flash of an unwrapped, clipped label ("Scoreboard & Matchup
+    Predict...") sitting next to the newly-highlighted destination link.
+    Injecting this before render_custom_nav() instead guarantees the CSS is
+    already present in the DOM by the time the nav re-renders, every time."""
+    st.markdown(
+        """
+        <style>
         /* The icon markdown and the page_link are two separate child elements,
            each wrapped in its own stElementContainer, both sitting inside one
            shared stVerticalBlock - three box layers between the st-key-navlink-
@@ -267,63 +310,86 @@ def inject_custom_css():
            its own box entirely, so its children splice directly into the
            st-key-navlink- div's flex row regardless of whatever width/display
            Streamlit set on the wrapper itself. */
-        div[class*="st-key-navlink-"] {{
+        div[class*="st-key-navlink-"] {
             display: flex !important;
             flex-direction: row !important;
-            align-items: center;
+            align-items: flex-start;
             gap: 10px;
             margin-bottom: 2px;
-        }}
+        }
         div[class*="st-key-navlink-"] div[data-testid="stVerticalBlock"],
-        div[class*="st-key-navlink-"] div[data-testid="stElementContainer"] {{
+        div[class*="st-key-navlink-"] div[data-testid="stElementContainer"] {
             display: contents;
-        }}
-        div[class*="st-key-navlink-"] [data-testid="stPageLink"] {{
+        }
+        div[class*="st-key-navlink-"] [data-testid="stPageLink"] {
             flex: 1;
-        }}
+            min-width: 0;
+        }
+        /* The old active page and the newly-hovered destination can both show
+           a highlighted background for a brief window while a click is still
+           being routed (the old page hasn't unmounted yet, the new one hasn't
+           finished its script run) - a transition here turns that overlap
+           into a soft crossfade instead of a jarring double-flash. */
+        div[class*="st-key-navlink-"] [data-testid="stPageLink"],
+        div[class*="st-key-navlink-"] [data-testid="stPageLink"] > div,
+        div[class*="st-key-navlink-"] a {
+            transition: background-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        /* A long title (e.g. "Scoreboard & Matchup Predictor") was getting
+           hard-clipped mid-word by Streamlit's own single-line nav-link
+           styling instead of wrapping - this lets it wrap to a second line
+           like a normal label instead of losing the tail end. */
+        div[class*="st-key-navlink-"] [data-testid="stPageLink"] p {
+            white-space: normal !important;
+            overflow-wrap: break-word;
+            line-height: 1.25;
+        }
+        div[class*="st-key-navlink-"] .nav-icon-slot {
+            margin-top: 3px;
+        }
         /* Coming-soon pages (waiting on the season to start): grey icon, dimmed
            label, disabled cursor - disabled=True on st.page_link already blocks
            the actual navigation, this is just making that state visible. */
         div[class*="st-key-navlink-player-analysis"] [data-testid="stPageLink"],
         div[class*="st-key-navlink-matchup-predictor"] [data-testid="stPageLink"],
-        div[class*="st-key-navlink-season-stats"] [data-testid="stPageLink"] {{
+        div[class*="st-key-navlink-season-stats"] [data-testid="stPageLink"] {
             opacity: 0.5;
-        }}
-        .nav-icon-dim svg {{
+        }
+        .nav-icon-dim svg {
             filter: grayscale(1) opacity(0.55) !important;
-        }}
-        .nav-icon-dim .nav-shimmer-band {{
+        }
+        .nav-icon-dim .nav-shimmer-band {
             animation: none !important;
-        }}
-        .nav-icon-slot {{
+        }
+        .nav-icon-slot {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             width: 22px;
             height: 22px;
             flex-shrink: 0;
-        }}
-        .nav-icon-slot svg {{
+        }
+        .nav-icon-slot svg {
             width: 20px;
             height: 20px;
             filter:
                 drop-shadow(-0.5px -0.5px 0.3px rgba(255, 255, 255, 0.7))
                 drop-shadow(1px 1.2px 0.8px rgba(30, 18, 8, 0.5));
-        }}
-        .nav-shimmer-band {{
+        }
+        .nav-shimmer-band {
             transform-box: fill-box;
             transform-origin: 0 0;
-        }}
-        @media (prefers-reduced-motion: no-preference) {{
-            .nav-shimmer-band {{
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            .nav-shimmer-band {
                 animation: navShimmer 3.2s ease-in-out infinite;
-            }}
-        }}
-        @keyframes navShimmer {{
-            0%   {{ transform: translateX(0); }}
-            45%  {{ transform: translateX(96px); }}
-            100% {{ transform: translateX(96px); }}
-        }}
+            }
+        }
+        @keyframes navShimmer {
+            0%   { transform: translateX(0); }
+            45%  { transform: translateX(96px); }
+            100% { transform: translateX(96px); }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -333,6 +399,8 @@ def inject_custom_css():
 # Page title -> nav icon shape id, one hand-drawn glyph per real page (see
 # render_nav_icon_defs). Home has no entry - it keeps its blank icon slot.
 NAV_ICON_SHAPES = {
+    "League News": "Newspaper",
+    "Rumor Mill": "Megaphone",
     "All-Time Rankings": "Crown",
     "League Records": "Trophy",
     "Wall of Shame": "Skull",
@@ -340,9 +408,9 @@ NAV_ICON_SHAPES = {
     "Front Office": "Briefcase",
     "Team Overview": "Bars",
     "Luck Index": "Clover",
-    "Team Killers (Do Not Draft)": "Ban",
+    "Team Killers": "Ban",
     "Player Analysis": "Person",
-    "Matchup Predictor": "Target",
+    "Scoreboard & Matchup Predictor": "Target",
     "Season Stats": "Trend",
     "H2H Matrix": "Swords",
     "Matchup History": "Clock",
@@ -351,7 +419,7 @@ NAV_ICON_SHAPES = {
 # Pages that need real in-season data (or just haven't been built yet) to be
 # worth visiting - disabled in the nav (with a "Coming Soon" suffix) until
 # they're ready.
-COMING_SOON_PAGES = {"Player Analysis", "Matchup Predictor", "Season Stats"}
+COMING_SOON_PAGES = {"Player Analysis", "Season Stats"}
 
 
 def render_nav_icon_defs():
@@ -462,6 +530,19 @@ def render_nav_icon_defs():
               <circle cx="24" cy="24" r="18" fill="none" stroke="currentColor" stroke-width="4" />
               <path d="M24,13 v11 l8,6" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
             </g>
+            <g id="navShapeNewspaper">
+              <path d="M8,10 h26 l6,6 v22 a2,2 0 0 1 -2,2 h-30 a2,2 0 0 1 -2,-2 v-26 a2,2 0 0 1 2,-2 z" />
+              <path d="M34,10 v6 h6" fill="none" stroke="#180f08" stroke-width="2" stroke-linejoin="round" />
+              <rect x="13" y="19" width="16" height="3" fill="#180f08" />
+              <rect x="13" y="25" width="22" height="3" fill="#180f08" />
+              <rect x="13" y="31" width="22" height="3" fill="#180f08" />
+            </g>
+            <g id="navShapeMegaphone">
+              <path d="M8,18 h6 l18,-11 v34 l-18,-11 h-6 a3,3 0 0 1 -3,-3 v-6 a3,3 0 0 1 3,-3 z" />
+              <rect x="10" y="29" width="6" height="11" rx="2" transform="rotate(14 10 29)" />
+              <path d="M36,15 a11,11 0 0 1 0,18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" />
+              <path d="M41,10 a17,17 0 0 1 0,28" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.65" />
+            </g>
 
             <mask id="navMaskCrown" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48">
               <g fill="#fff" stroke="#fff" style="color: #fff"><use href="#navShapeCrown" /></g>
@@ -501,6 +582,12 @@ def render_nav_icon_defs():
             </mask>
             <mask id="navMaskClock" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48">
               <g fill="#fff" stroke="#fff" style="color: #fff"><use href="#navShapeClock" /></g>
+            </mask>
+            <mask id="navMaskNewspaper" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48">
+              <g fill="#fff" stroke="#fff" style="color: #fff"><use href="#navShapeNewspaper" /></g>
+            </mask>
+            <mask id="navMaskMegaphone" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48">
+              <g fill="#fff" stroke="#fff" style="color: #fff"><use href="#navShapeMegaphone" /></g>
             </mask>
               </defs>
             </svg>
@@ -889,6 +976,237 @@ def render_storyline_feed(storylines, edition_label=None):
     )
 
     st.markdown(f'{masthead}<div class="news-grid">{cards_html}</div>', unsafe_allow_html=True)
+
+
+# A dark, gold-accented "sportsbook slip" look for the Vegas-blended card -
+# distinct on purpose from the rest of this app's light theme, the same way
+# a real odds board reads differently than the surrounding page. The ESPN
+# comparison card stays in this app's normal light card language, so the two
+# are visually unmistakable at a glance, not just by their labels. Shared
+# between views/matchup_predictor.py and the Home page carousel so both
+# always render the identical card.
+VEGAS_THEME = {
+    'bg': 'linear-gradient(160deg, #14181f, #1d2430)',
+    'border': '#8a5a17',
+    'ink_primary': '#f7f3ea',
+    'ink_muted': '#a9a394',
+    'accent': PALETTE['categorical'][3],  # gold
+    'pill_bg': PALETTE['categorical'][3],
+    'pill_text': '#1a1206',
+    'bar_home': PALETTE['categorical'][3],
+    'bar_away': PALETTE['categorical'][2],
+}
+ESPN_THEME = {
+    'bg': PALETTE['surface'],
+    'border': PALETTE['gridline'],
+    'ink_primary': PALETTE['ink_primary'],
+    'ink_muted': PALETTE['ink_muted'],
+    'accent': PALETTE['ink_secondary'],
+    'pill_bg': PALETTE['page'],
+    'pill_text': PALETTE['ink_muted'],
+    'bar_home': PALETTE['categorical'][0],
+    'bar_away': PALETTE['categorical'][1],
+}
+
+
+def _ats_str(ats_records, owner):
+    if not ats_records:
+        return None
+    rec = ats_records.get(owner)
+    if not rec:
+        return None
+    s = f"{rec['beats']}-{rec['misses']}"
+    if rec['pushes']:
+        s += f"-{rec['pushes']}"
+    return s
+
+
+def _moneyline_str(odds):
+    return f"+{odds:.0f}" if odds > 0 else f"{odds:.0f}"
+
+
+def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None):
+    """One Vegas-style matchup card - the dark VEGAS_THEME slip or the light
+    ESPN_THEME comparison, same function either way (theme + show_details
+    decide the difference). Used both for the full Scoreboard & Matchup
+    Predictor page and, as a pair, for one slide of the Home page's
+    Matchups and Predictions carousel (render_matchup_carousel). `m` is one
+    entry from espn_data.get_current_week_matchups (carries live
+    home_score/away_score alongside the lineups); `pred` is the output of
+    either matchup_predictor_stats.compute_matchup_prediction or
+    compute_espn_only_prediction."""
+    from matchup_predictor_stats import win_prob_to_moneyline
+
+    home_favorite = pred['spread'] > 0
+    favorite_team = m['home_team_name'] if home_favorite else m['away_team_name']
+    ml_home = win_prob_to_moneyline(pred['win_prob_home'])
+    ml_away = win_prob_to_moneyline(pred['win_prob_away'])
+
+    def _team_block(name, owner, score, live_score, moneyline, is_favorite, align):
+        ats = _ats_str(ats_records, owner) if show_details else None
+        detail_html = ""
+        if show_details:
+            detail_html = f'<div style="font-size:0.74rem;color:{theme["ink_muted"]}">{owner}</div>'
+            if ats:
+                detail_html += f'<div style="font-size:0.7rem;color:{theme["ink_muted"]}">ATS: {ats}</div>'
+        live_html = ""
+        if live_score and live_score > 0:
+            live_html = (
+                f'<div style="font-size:0.68rem;font-weight:700;color:{PALETTE["status"]["good"]};'
+                f'margin-top:2px;">&#9679; LIVE {live_score:,.1f}</div>'
+            )
+        score_color = theme['accent'] if is_favorite else theme['ink_primary']
+        # Built as ONE unbroken line, not a multi-line triple-quoted string -
+        # this whole card gets spliced into an outer f-string, and any line
+        # left indented 4+ spaces at that point reads as a Markdown code
+        # block (rendered as literal text) instead of HTML once it reaches
+        # st.markdown, regardless of how it looked indented in this source.
+        return (
+            f'<div style="flex:1;text-align:{align};">'
+            f'<div style="font-weight:700;color:{theme["ink_primary"]};font-size:0.95rem;">{name}</div>'
+            f'{detail_html}'
+            f'<div style="font-size:1.6rem;font-weight:800;color:{score_color};margin-top:3px;">{score:.1f}</div>'
+            f'<div style="font-size:0.72rem;color:{theme["ink_muted"]};margin-top:1px;">{_moneyline_str(moneyline)}</div>'
+            f'{live_html}'
+            f'</div>'
+        )
+
+    coverage_html = ""
+    if show_details and 'home_breakdown' in pred:
+        all_tiers = [b['tier'] for b in pred['home_breakdown'] + pred['away_breakdown']]
+        vegas_count = sum(1 for t in all_tiers if t.startswith('vegas'))
+        coverage_html = (
+            f'<div style="font-size:0.7rem;color:{theme["ink_muted"]};margin-top:10px;">'
+            f'Vegas signal used for {vegas_count}/{len(all_tiers)} rostered starters</div>'
+        )
+
+    home_block = _team_block(
+        m['home_team_name'], m['home_owner'], pred['home_projected'], m.get('home_score'),
+        ml_home, home_favorite, 'left')
+    away_block = _team_block(
+        m['away_team_name'], m['away_owner'], pred['away_projected'], m.get('away_score'),
+        ml_away, not home_favorite, 'right')
+
+    # Same one-line-per-fragment discipline as _team_block, for the same
+    # reason - this return value goes straight into st.markdown.
+    return (
+        f'<div style="background:{theme["bg"]};border:1.5px solid {theme["border"]};border-radius:12px;'
+        f'padding:16px 18px;height:100%;box-sizing:border-box;">'
+        f'<div style="display:inline-block;background:{theme["pill_bg"]};color:{theme["pill_text"]};'
+        f'font-size:0.65rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;'
+        f'padding:3px 10px;border-radius:20px;margin-bottom:12px;">{label}</div>'
+        f'<div style="display:flex;align-items:flex-start;gap:10px;">'
+        f'{home_block}'
+        f'<div style="color:{theme["ink_muted"]};font-weight:700;padding-top:4px;font-size:0.85rem;">@</div>'
+        f'{away_block}'
+        f'</div>'
+        f'<div style="margin-top:14px;padding-top:12px;border-top:1px solid {theme["border"]};">'
+        f'<div style="font-size:0.65rem;color:{theme["ink_muted"]};text-transform:uppercase;'
+        f'letter-spacing:0.06em;">Spread</div>'
+        f'<div style="font-weight:700;color:{theme["accent"]};font-size:0.95rem;">'
+        f'{favorite_team} {-abs(pred["spread"]):.1f}</div>'
+        f'</div>'
+        f'<div style="margin-top:10px;">'
+        f'<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:{theme["border"]}44;">'
+        f'<div style="width:{pred["win_prob_home"] * 100:.2f}%;background:{theme["bar_home"]}"></div>'
+        f'<div style="width:{pred["win_prob_away"] * 100:.2f}%;background:{theme["bar_away"]}"></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;font-size:0.7rem;color:{theme["ink_muted"]};'
+        f'margin-top:4px;"><span>{pred["win_prob_home"] * 100:.1f}%</span>'
+        f'<span>{pred["win_prob_away"] * 100:.1f}%</span></div>'
+        f'</div>'
+        f'{coverage_html}'
+        f'</div>'
+    )
+
+
+def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, height=300):
+    """Same continuously-scrolling marquee mechanic as render_trivia_carousel
+    (a duplicated track animated -50% and looped, built with
+    components.v1.html for CSS isolation) - one slide per matchup instead of
+    one trivia fact, each slide the Vegas + ESPN sportsbook card pair side by
+    side via render_sportsbook_card, so this always looks identical to the
+    full Scoreboard & Matchup Predictor page. predictions is
+    [(matchup, vegas_pred, espn_pred), ...]."""
+    import streamlit.components.v1 as components
+
+    if not predictions:
+        return
+
+    def _slide(m, vegas_pred, espn_pred):
+        vegas_html = render_sportsbook_card(VEGAS_THEME, "Vegas Projection", m, vegas_pred, True, ats_records)
+        espn_html = render_sportsbook_card(ESPN_THEME, "ESPN Projection", m, espn_pred, False)
+        return (
+            f'<div class="slide">'
+            f'<div class="slide-title">{m["home_team_name"]} vs {m["away_team_name"]}</div>'
+            f'<div class="slide-cards"><div>{vegas_html}</div><div>{espn_html}</div></div>'
+            f'</div>'
+        )
+
+    slides_html = "".join(_slide(m, vp, ep) for m, vp, ep in predictions)
+    track_html = slides_html + slides_html
+    duration = max(30, len(predictions) * seconds_per_card)
+
+    html = f"""
+    <html><head><style>
+      html, body {{ margin:0; padding:0; font-family:-apple-system,"Segoe UI",sans-serif;
+                    background:transparent; overflow:hidden; }}
+      .wrap {{ height:{height - 16}px; overflow:hidden; -webkit-mask-image: linear-gradient(90deg,
+               transparent, #000 3%, #000 97%, transparent);
+               mask-image: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }}
+      .track {{ display:flex; height:100%; width:max-content; gap:28px; padding:8px 4px;
+                box-sizing:border-box; animation: scroll {duration}s linear infinite; }}
+      .track:hover {{ animation-play-state: paused; }}
+      @keyframes scroll {{
+        from {{ transform: translateX(0); }}
+        to {{ transform: translateX(-50%); }}
+      }}
+      .slide {{ flex: 0 0 620px; box-sizing:border-box; display:flex; flex-direction:column; }}
+      .slide-title {{ font-weight:700; color:{PALETTE['ink_muted']}; font-size:0.78rem;
+                      text-transform:uppercase; letter-spacing:0.04em; margin-bottom:8px; }}
+      .slide-cards {{ display:flex; gap:12px; flex:1; }}
+      .slide-cards > div {{ flex:1; min-width:0; }}
+    </style></head>
+    <body>
+      <div class="wrap"><div class="track">{track_html}</div></div>
+    </body></html>
+    """
+    components.html(html, height=height)
+
+
+def render_rumor_feed(rumors):
+    """Twitter/X-style feed for the League News page's Rumor Mill - every
+    entry traces back to a real fact (see home_stats.compute_rumors), just
+    delivered in a gossipy voice instead of League Insider's newspaper one.
+    rumors is [{'handle', 'text', 'category'}, ...]."""
+    if not rumors:
+        st.info(
+            "No rumors yet this season - check back once there's been some real league "
+            "activity (trades, streaks, a tight playoff race) to gossip about.",
+            icon=":material/chat_bubble:",
+        )
+        return
+
+    cards_html = ""
+    for r in rumors:
+        handle = r['handle']
+        avatar_color = _owner_avatar_color(handle)
+        initials = handle.lstrip('@')[:2].upper()
+        cards_html += (
+            '<div class="rumor-card">'
+            f'<span class="owner-avatar" style="background-color:{avatar_color};width:38px;height:38px;">'
+            f'{initials}</span>'
+            '<div>'
+            f'<div style="font-weight:700;color:{PALETTE["ink_primary"]};font-size:0.88rem;">{handle}'
+            f'<span style="font-weight:400;color:{PALETTE["ink_muted"]};font-size:0.8rem;"> &middot; insider tip</span>'
+            '</div>'
+            f'<div style="margin-top:3px;color:{PALETTE["ink_secondary"]};font-size:0.92rem;line-height:1.4;">'
+            f'{r["text"]}</div>'
+            '</div>'
+            '</div>'
+        )
+
+    st.markdown(f'<div class="rumor-feed">{cards_html}</div>', unsafe_allow_html=True)
 
 
 def render_mini_board(rows, columns, name_key='owner', subtitle_key=None, key_prefix='mini'):
