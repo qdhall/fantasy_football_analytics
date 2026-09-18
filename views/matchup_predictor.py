@@ -13,8 +13,8 @@ from common import (
     render_sidebar_info,
     render_sportsbook_card,
 )
+from db import ensure_synced, get_season_box_scores
 from espn_data import (
-    build_season_box_scores,
     get_credentials,
     get_current_week_matchups,
     get_league_scoring_settings,
@@ -61,26 +61,24 @@ TIER_LABELS = {
     'espn_only': 'ESPN projection only',
 }
 
-# This week's matchups, Vegas odds, scoring settings, and (unless another
-# page already cached it this session) the current season's box scores for
-# ATS records are four independent live calls - same fix as Home's live-data
-# section: run them concurrently instead of one after another, since none
-# of them need each other's result.
+# This week's matchups, Vegas odds, and scoring settings are three
+# independent live calls - run them concurrently. Box scores (for ATS
+# records) are now a fast DB read (see db.py), shared with Matchup
+# History/Home/Rumor Mill's own cache key.
+ensure_synced(league_id, 2026, espn_s2, swid)
 box_score_cache = st.session_state.setdefault('season_box_scores_cache', {})
-with st.spinner("Loading this week's matchups, odds, and Against-the-Spread records..."):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+if 2026 not in box_score_cache:
+    box_score_cache[2026] = get_season_box_scores(league_id, 2026)
+
+with st.spinner("Loading this week's matchups and odds..."):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         matchups_future = executor.submit(get_current_week_matchups, league_id, 2026, espn_s2, swid)
         odds_future = executor.submit(fetch_current_nfl_odds)
         scoring_future = executor.submit(get_league_scoring_settings, league_id, 2026, espn_s2, swid)
-        box_scores_future = None
-        if 2026 not in box_score_cache:
-            box_scores_future = executor.submit(build_season_box_scores, league_id, 2026, espn_s2, swid)
 
         matchups = matchups_future.result()
         odds_events = odds_future.result()
         scoring_settings = scoring_future.result()
-        if box_scores_future is not None:
-            box_score_cache[2026] = box_scores_future.result()
 
 if not matchups:
     st.info("No live matchups found for the current week yet.", icon=":material/schedule:")

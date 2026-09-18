@@ -557,3 +557,57 @@ def get_h2h_matrix(espn_league_id, start_year, end_year, record_type='all'):
                 matrix_data[row_owner][col_owner] = f"{wins}-{losses}"
 
     return pd.DataFrame(matrix_data).T[owners]
+
+
+def get_season_box_scores(espn_league_id, year):
+    """Replaces espn_data.build_season_box_scores - same
+    {week: [{home_owner, home_score, home_lineup, away_owner, away_score,
+    away_lineup}, ...]} shape, lineup entries matching _lineup_players'
+    exact fields. game_played/on_bye_week are hardcoded to their
+    always-completed-week values (100/False) since this table only ever
+    holds weeks that were already final when synced - same as the original
+    function, which only ever fetched completed weeks to begin with."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT g.week, g.home_owner_id, oh.display_name, g.home_score,
+                   g.away_owner_id, oa.display_name, g.away_score
+            FROM games g
+            JOIN leagues l ON l.id = g.league_id
+            JOIN owners oh ON oh.id = g.home_owner_id
+            JOIN owners oa ON oa.id = g.away_owner_id
+            WHERE l.espn_league_id = %s AND g.year = %s
+            ORDER BY g.week
+            """,
+            (espn_league_id, year),
+        )
+        game_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT pw.week, pw.owner_id, p.name, pw.position, pw.slot,
+                   pw.actual_points, pw.projected_points, pw.pro_team
+            FROM player_weeks pw
+            JOIN players p ON p.id = pw.player_id
+            JOIN leagues l ON l.id = pw.league_id
+            WHERE l.espn_league_id = %s AND pw.year = %s
+            """,
+            (espn_league_id, year),
+        )
+        lineups = {}
+        for week, owner_id, name, position, slot, points, projected, pro_team in cur.fetchall():
+            lineups.setdefault((week, owner_id), []).append({
+                'name': name, 'position': position, 'slot': slot,
+                'points': float(points), 'projected': float(projected), 'pro_team': pro_team,
+                'game_played': 100, 'on_bye_week': False,
+            })
+
+    weeks = {}
+    for week, home_owner_id, home_owner, home_score, away_owner_id, away_owner, away_score in game_rows:
+        weeks.setdefault(week, []).append({
+            'home_owner': home_owner, 'home_score': float(home_score),
+            'home_lineup': lineups.get((week, home_owner_id), []),
+            'away_owner': away_owner, 'away_score': float(away_score),
+            'away_lineup': lineups.get((week, away_owner_id), []),
+        })
+    return weeks

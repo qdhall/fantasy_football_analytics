@@ -1,8 +1,11 @@
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
 from common import PALETTE, configure_page, get_league_history, render_footer, render_sidebar_info
-from espn_data import build_season_box_scores, get_credentials, get_slot_structure, optimal_lineup_points_from_dicts
+from db import ensure_synced, get_season_box_scores
+from espn_data import get_credentials, get_slot_structure, optimal_lineup_points_from_dicts
 
 configure_page("Matchup History")
 
@@ -64,10 +67,11 @@ def _style_games(df):
 
 
 def _get_season_box_scores(year):
+    if year >= datetime.now().year:
+        ensure_synced(league_id, year, espn_s2, swid)
     cache = st.session_state.setdefault('season_box_scores_cache', {})
     if year not in cache:
-        with st.spinner(f"Pulling {year} box scores from ESPN..."):
-            cache[year] = build_season_box_scores(league_id, year, espn_s2, swid)
+        cache[year] = get_season_box_scores(league_id, year)
     return cache[year]
 
 
