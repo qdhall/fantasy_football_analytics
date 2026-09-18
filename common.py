@@ -1044,16 +1044,21 @@ def _moneyline_str(odds):
     return f"+{odds:.0f}" if odds > 0 else f"{odds:.0f}"
 
 
-def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None):
-    """One Vegas-style matchup card - the dark VEGAS_THEME slip or the light
-    ESPN_THEME comparison, same function either way (theme + show_details
-    decide the difference). Used both for the full Scoreboard & Matchup
-    Predictor page and, as a pair, for one slide of the Home page's
-    Matchups and Predictions carousel (render_matchup_carousel). `m` is one
-    entry from espn_data.get_current_week_matchups (carries live
-    home_score/away_score alongside the lineups); `pred` is the output of
-    either matchup_predictor_stats.compute_matchup_prediction or
-    compute_espn_only_prediction."""
+def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None, espn_pred=None):
+    """One Vegas-style matchup card. Used both for the full Scoreboard &
+    Matchup Predictor page and for one slide of the Home page's Matchups
+    and Predictions carousel (render_matchup_carousel). `m` is one entry
+    from espn_data.get_current_week_matchups (carries live home_score/
+    away_score alongside the lineups); `pred` is
+    matchup_predictor_stats.compute_matchup_prediction's output - the
+    Vegas-blended projection, which is what this card is built around.
+    `espn_pred` (compute_espn_only_prediction's output) is optional and,
+    when given, adds ESPN's own projected points as a small subnote under
+    each team's Vegas number - this used to be its own separate ESPN-themed
+    card; folding it in here as one line removes a whole card's worth of
+    visual noise (its own spread, win-probability bar, etc.) for a number
+    that's really just a point of comparison, not a second prediction
+    worth equal billing."""
     from matchup_predictor_stats import win_prob_to_moneyline
 
     home_favorite = pred['spread'] > 0
@@ -1061,13 +1066,19 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
     ml_home = win_prob_to_moneyline(pred['win_prob_home'])
     ml_away = win_prob_to_moneyline(pred['win_prob_away'])
 
-    def _team_block(name, owner, score, live_score, moneyline, is_favorite, align):
+    def _team_block(name, owner, score, live_score, moneyline, espn_score, is_favorite, align):
         ats = _ats_str(ats_records, owner) if show_details else None
         detail_html = ""
         if show_details:
             detail_html = f'<div style="font-size:0.74rem;color:{theme["ink_muted"]}">{owner}</div>'
             if ats:
                 detail_html += f'<div style="font-size:0.7rem;color:{theme["ink_muted"]}">ATS: {ats}</div>'
+        espn_html = ""
+        if espn_score is not None:
+            espn_html = (
+                f'<div style="font-size:0.68rem;color:{theme["ink_muted"]};margin-top:3px;">'
+                f'ESPN Projection: {espn_score:.1f}</div>'
+            )
         live_html = ""
         if live_score and live_score > 0:
             live_html = (
@@ -1086,25 +1097,17 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
             f'{detail_html}'
             f'<div style="font-size:1.6rem;font-weight:800;color:{score_color};margin-top:3px;">{score:.1f}</div>'
             f'<div style="font-size:0.72rem;color:{theme["ink_muted"]};margin-top:1px;">{_moneyline_str(moneyline)}</div>'
+            f'{espn_html}'
             f'{live_html}'
             f'</div>'
         )
 
-    coverage_html = ""
-    if show_details and 'home_breakdown' in pred:
-        all_tiers = [b['tier'] for b in pred['home_breakdown'] + pred['away_breakdown']]
-        vegas_count = sum(1 for t in all_tiers if t.startswith('vegas'))
-        coverage_html = (
-            f'<div style="font-size:0.7rem;color:{theme["ink_muted"]};margin-top:10px;">'
-            f'Vegas signal used for {vegas_count}/{len(all_tiers)} rostered starters</div>'
-        )
-
     home_block = _team_block(
         m['home_team_name'], m['home_owner'], pred['home_projected'], m.get('home_score'),
-        ml_home, home_favorite, 'left')
+        ml_home, espn_pred['home_projected'] if espn_pred else None, home_favorite, 'left')
     away_block = _team_block(
         m['away_team_name'], m['away_owner'], pred['away_projected'], m.get('away_score'),
-        ml_away, not home_favorite, 'right')
+        ml_away, espn_pred['away_projected'] if espn_pred else None, not home_favorite, 'right')
 
     # Same one-line-per-fragment discipline as _team_block, for the same
     # reason - this return value goes straight into st.markdown.
@@ -1134,7 +1137,6 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
         f'margin-top:4px;"><span>{pred["win_prob_home"] * 100:.1f}%</span>'
         f'<span>{pred["win_prob_away"] * 100:.1f}%</span></div>'
         f'</div>'
-        f'{coverage_html}'
         f'</div>'
     )
 
@@ -1143,9 +1145,10 @@ def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, 
     """Same continuously-scrolling marquee mechanic as render_trivia_carousel
     (a duplicated track animated -50% and looped, built with
     components.v1.html for CSS isolation) - one slide per matchup instead of
-    one trivia fact, each slide the Vegas + ESPN sportsbook card pair side by
-    side via render_sportsbook_card, so this always looks identical to the
-    full Scoreboard & Matchup Predictor page. predictions is
+    one trivia fact, each slide a single Vegas sportsbook card (ESPN's
+    projection folded in as a subnote, see render_sportsbook_card) via
+    render_sportsbook_card, so this always looks identical to the full
+    Scoreboard & Matchup Predictor page. predictions is
     [(matchup, vegas_pred, espn_pred), ...]."""
     import streamlit.components.v1 as components
 
@@ -1153,12 +1156,11 @@ def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, 
         return
 
     def _slide(m, vegas_pred, espn_pred):
-        vegas_html = render_sportsbook_card(VEGAS_THEME, "Vegas Projection", m, vegas_pred, True, ats_records)
-        espn_html = render_sportsbook_card(ESPN_THEME, "ESPN Projection", m, espn_pred, False)
+        card_html = render_sportsbook_card(VEGAS_THEME, "Vegas Projection", m, vegas_pred, True, ats_records, espn_pred)
         return (
             f'<div class="slide">'
             f'<div class="slide-title">{m["home_team_name"]} vs {m["away_team_name"]}</div>'
-            f'<div class="slide-cards"><div>{vegas_html}</div><div>{espn_html}</div></div>'
+            f'<div class="slide-card">{card_html}</div>'
             f'</div>'
         )
 
@@ -1173,18 +1175,17 @@ def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, 
       .wrap {{ height:{height - 16}px; overflow:hidden; -webkit-mask-image: linear-gradient(90deg,
                transparent, #000 3%, #000 97%, transparent);
                mask-image: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }}
-      .track {{ display:flex; height:100%; width:max-content; gap:28px; padding:8px 4px;
+      .track {{ display:flex; height:100%; width:max-content; gap:20px; padding:8px 4px;
                 box-sizing:border-box; animation: scroll {duration}s linear infinite; }}
       .track:hover {{ animation-play-state: paused; }}
       @keyframes scroll {{
         from {{ transform: translateX(0); }}
         to {{ transform: translateX(-50%); }}
       }}
-      .slide {{ flex: 0 0 620px; box-sizing:border-box; display:flex; flex-direction:column; }}
+      .slide {{ flex: 0 0 340px; box-sizing:border-box; display:flex; flex-direction:column; }}
       .slide-title {{ font-weight:700; color:{PALETTE['ink_muted']}; font-size:0.78rem;
                       text-transform:uppercase; letter-spacing:0.04em; margin-bottom:8px; }}
-      .slide-cards {{ display:flex; gap:12px; flex:1; }}
-      .slide-cards > div {{ flex:1; min-width:0; }}
+      .slide-card {{ flex:1; min-width:0; }}
     </style></head>
     <body>
       <div class="wrap"><div class="track">{track_html}</div></div>

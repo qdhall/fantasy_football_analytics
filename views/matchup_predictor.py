@@ -4,7 +4,6 @@ import pandas as pd
 import streamlit as st
 
 from common import (
-    ESPN_THEME,
     VEGAS_THEME,
     PALETTE,
     configure_page,
@@ -130,15 +129,10 @@ for i, (m, vegas_pred, espn_pred) in enumerate(predictions):
         unsafe_allow_html=True,
     )
     with st.container(key=f"card-matchup-{i}"):
-        col1, col2 = st.columns(2)
-        with col1:
+        card_col, _ = st.columns(2)
+        with card_col:
             st.markdown(
-                render_sportsbook_card(VEGAS_THEME, "Vegas Projection", m, vegas_pred, True, ats_records),
-                unsafe_allow_html=True,
-            )
-        with col2:
-            st.markdown(
-                render_sportsbook_card(ESPN_THEME, "ESPN Projection", m, espn_pred, False),
+                render_sportsbook_card(VEGAS_THEME, "Vegas Projection", m, vegas_pred, True, ats_records, espn_pred),
                 unsafe_allow_html=True,
             )
 
