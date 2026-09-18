@@ -2,7 +2,8 @@ import pandas as pd
 import streamlit as st
 
 from common import PALETTE, configure_page, render_footer, render_mini_board, render_sidebar_info
-from espn_data import create_h2h_matrix, get_credentials
+from db import ensure_synced, get_h2h_matrix
+from espn_data import get_credentials
 
 configure_page("H2H Matrix")
 league_id, espn_s2, swid = get_credentials()
@@ -10,6 +11,7 @@ league_id, espn_s2, swid = get_credentials()
 st.header(":material/swords: H2H Matrix")
 
 start_year, end_year = 2019, 2026
+ensure_synced(league_id, end_year, espn_s2, swid)
 
 st.sidebar.markdown("---")
 st.sidebar.info(
@@ -28,11 +30,10 @@ record_type = {"Regular Season Only": "regular", "Playoffs Only": "playoffs", "A
 cache_key = f'h2h_matrix_{record_type}_{start_year}_{end_year}'
 
 if cache_key not in st.session_state:
-    with st.spinner(f"Processing {matrix_type.lower()} data... this may take a few minutes..."):
-        try:
-            st.session_state[cache_key] = create_h2h_matrix(league_id, start_year, end_year, espn_s2, swid, record_type=record_type)
-        except Exception as e:
-            st.error(f"Error generating H2H matrix: {e}")
+    try:
+        st.session_state[cache_key] = get_h2h_matrix(league_id, start_year, end_year, record_type=record_type)
+    except Exception as e:
+        st.error(f"Error generating H2H matrix: {e}")
 
 if cache_key not in st.session_state:
     st.info("Matrix generation failed - check your league configuration")

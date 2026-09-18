@@ -18,6 +18,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
+import pandas as pd
+
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
@@ -498,3 +500,60 @@ def ensure_synced(espn_league_id, year, espn_s2, swid):
             sync_season(espn_league_id, year, espn_s2, swid, league=league)
 
     st.session_state[session_key] = True
+
+
+# --- Read functions (page migrations) ---------------------------------------
+# Each of these reassembles the exact shape the page/consuming *_stats.py
+# function already expects, so callers need no changes beyond swapping which
+# function they call.
+
+def get_h2h_matrix(espn_league_id, start_year, end_year, record_type='all'):
+    """Replaces espn_data.create_h2h_matrix - a single indexed query over
+    `games` instead of a full live re-walk of every season with no caching at
+    all (the original had none, even for long-final years - the worst
+    offender in the app, which is why this page migrates first). Same output
+    shape: a pandas DataFrame, index/columns = every owner active in the
+    range, cell = "wins-losses" (row's record against column, ties excluded -
+    matches get_all_time_h2h_by_scores_fixed's existing behavior of skipping
+    ties entirely rather than counting them either way), diagonal = "-"."""
+    playoff_filter = ""
+    if record_type == 'regular':
+        playoff_filter = "AND v.is_playoff = false"
+    elif record_type == 'playoffs':
+        playoff_filter = "AND v.is_playoff = true"
+
+    with _cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT o.display_name, opp.display_name,
+                   count(*) FILTER (WHERE v.result = 'W'),
+                   count(*) FILTER (WHERE v.result = 'L')
+            FROM v_owner_game_log v
+            JOIN leagues l ON l.id = v.league_id
+            JOIN owners o ON o.id = v.owner_id
+            JOIN owners opp ON opp.id = v.opponent_id
+            WHERE l.espn_league_id = %s AND v.year BETWEEN %s AND %s
+                AND v.result != 'T' {playoff_filter}
+            GROUP BY o.display_name, opp.display_name
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        pair_records = {(row[0], row[1]): (row[2], row[3]) for row in cur.fetchall()}
+
+    # Owner set is derived from who actually has a game of this record_type,
+    # not from season_teams - matches create_h2h_matrix's original behavior
+    # exactly: an owner who never made the playoffs simply doesn't appear in
+    # the "Playoffs Only" matrix at all, rather than showing an all-zero row.
+    owners = sorted({name for pair in pair_records for name in pair})
+
+    matrix_data = {}
+    for row_owner in owners:
+        matrix_data[row_owner] = {}
+        for col_owner in owners:
+            if row_owner == col_owner:
+                matrix_data[row_owner][col_owner] = "-"
+            else:
+                wins, losses = pair_records.get((row_owner, col_owner), (0, 0))
+                matrix_data[row_owner][col_owner] = f"{wins}-{losses}"
+
+    return pd.DataFrame(matrix_data).T[owners]
