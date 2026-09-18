@@ -7,6 +7,7 @@ from common import (
     configure_page,
     get_league_history,
     render_footer,
+    render_loading_screen,
     render_matchup_carousel,
     render_mini_board,
     render_sidebar_info,
@@ -42,48 +43,44 @@ st.caption("Athletic Enough to Play Fantasy Football")
 
 current_year = datetime.now().year
 
+# Shown before anything else - including get_league_history() below, which
+# on a cold connection pool is itself a real (if brief) wait, not just the
+# live matchups/odds/snapshot fetch - so the loading screen is genuinely the
+# first thing rendered, not just first among the slow parts.
+content_slot = st.empty()
+if 'home_live_data' not in st.session_state:
+    with content_slot.container():
+        render_loading_screen("Loading your league portal...")
+
 owners = get_league_history()
 
 if not owners:
-    st.error("Could not load league history. Check your league credentials.")
+    with content_slot.container():
+        st.error("Could not load league history. Check your league credentials.")
     st.stop()
 
-# --- League Trivia carousel ---------------------------------------------------
-header_col, link_col = st.columns([5, 1.4])
-with header_col:
-    st.markdown("### :material/casino: League Trivia")
-    st.caption("A few of the league's all-time numbers - cycling automatically.")
-with link_col:
-    st.write("")
-    st.page_link("views/league_trivia.py", label="View All Trivia", icon=":material/casino:")
-
-trivia = {k: v for k, v in compute_league_trivia(owners).items() if v}
-render_trivia_carousel(trivia)
-
-st.markdown("---")
-
-# --- Live data: fetched once per session, in parallel -------------------------
-# get_current_week_matchups, fetch_current_nfl_odds, get_league_scoring_settings,
-# and get_current_season_snapshot are four independent live calls - none of them
-# need each other's result, they were just being awaited one after another
-# (measured ~10s combined), which is why everything below League Trivia (whose
-# data is cheap and already disk/R2-cached) used to sit there blank for a
-# beat. Running them concurrently cuts that to roughly the slowest single call,
-# and caching the bundle in session_state means every rerun after the first
-# (clicking anything, anywhere in the app) is instant instead of re-paying that
-# cost on every single interaction.
 league_id, espn_s2, swid = get_credentials()
 
 # Shares its cache key with Matchup History/Rumor Mill/Matchup Predictor's
 # own current-season box-score read - whichever page hits it first this
 # session pays the (now cheap, DB-backed) cost once.
 box_score_cache = st.session_state.setdefault('season_box_scores_cache', {})
-ensure_synced(league_id, current_year, espn_s2, swid)
-if current_year not in box_score_cache:
-    box_score_cache[current_year] = get_season_box_scores(league_id, current_year)
 
 
-def _render_matchups_header():
+def _render_trivia_section():
+    header_col, link_col = st.columns([5, 1.4])
+    with header_col:
+        st.markdown("### :material/casino: League Trivia")
+        st.caption("A few of the league's all-time numbers - cycling automatically.")
+    with link_col:
+        st.write("")
+        st.page_link("views/league_trivia.py", label="View All Trivia", icon=":material/casino:")
+
+    trivia = {k: v for k, v in compute_league_trivia(owners).items() if v}
+    render_trivia_carousel(trivia)
+
+
+def _render_matchups_section(matchups, odds_events, scoring_settings, ats_records):
     matchups_col, link_col = st.columns([5, 1.4])
     with matchups_col:
         st.markdown("### :material/insights: Matchups and Predictions")
@@ -92,8 +89,6 @@ def _render_matchups_header():
         st.write("")
         st.page_link("views/matchup_predictor.py", label="Full Scoreboard", icon=":material/insights:")
 
-
-def _render_matchups_section(matchups, odds_events, scoring_settings, ats_records):
     if matchups:
         odds_lookup = parse_player_props(odds_events)
         team_implied_totals = parse_team_implied_totals(odds_events)
@@ -111,11 +106,9 @@ def _render_matchups_section(matchups, odds_events, scoring_settings, ats_record
         st.info("No live matchups yet this week.", icon=":material/schedule:")
 
 
-def _render_awards_header():
+def _render_awards_section(snapshot):
     st.markdown("### :material/emoji_events: Award Races & Playoff Picture")
 
-
-def _render_awards_section(snapshot):
     if not snapshot['season_started']:
         st.info(
             f"The {current_year} season hasn't kicked off yet - once Week 1 is in the books, "
@@ -154,55 +147,48 @@ def _render_awards_section(snapshot):
         )
 
 
-_render_matchups_header()
-matchups_slot = st.empty()
-st.markdown("---")
-_render_awards_header()
-awards_slot = st.empty()
-
-if 'home_live_data' in st.session_state:
-    # Repeat visit this session - already have everything, just render normally.
+def _render_full_page():
     live_data = st.session_state['home_live_data']
-    if 'home_ats' not in st.session_state:
-        st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
-    with matchups_slot.container():
-        _render_matchups_section(
-            live_data['matchups'], live_data['odds_events'], live_data['scoring_settings'], st.session_state['home_ats'])
-    with awards_slot.container():
-        _render_awards_section(live_data['snapshot'])
-else:
-    # First load this session: matchups/odds and the season snapshot are
-    # independent live calls with different typical latency (snapshot is
-    # usually the fastest of the three). Both slots are reserved up front
-    # (right under their already-visible headers) and each is filled the
-    # moment ITS OWN dependency resolves, spinner-and-all matching every
-    # other page's st.spinner style - rather than gating both behind the
-    # single slowest call, which used to mean Award Races sat blank exactly
-    # as long as the matchups carousel did even though its own data was
-    # usually ready well before that.
+    _render_trivia_section()
+    st.markdown("---")
+    _render_matchups_section(
+        live_data['matchups'], live_data['odds_events'], live_data['scoring_settings'], st.session_state['home_ats'])
+    st.markdown("---")
+    _render_awards_section(live_data['snapshot'])
+
+
+if 'home_live_data' not in st.session_state:
+    # One clean reveal instead of sections popping in individually as their
+    # own data resolves: the loading screen is already showing (set right
+    # after page title, above) - do every live call (still concurrently -
+    # none of them need each other's result), and only replace the loading
+    # screen with the fully-rendered page once everything is ready. Repeat
+    # visits within the session skip this whole branch and render straight
+    # from session_state, instant.
+    ensure_synced(league_id, current_year, espn_s2, swid)
+    if current_year not in box_score_cache:
+        box_score_cache[current_year] = get_season_box_scores(league_id, current_year)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
         odds_future = executor.submit(fetch_current_nfl_odds)
         snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
 
-        with awards_slot.container():
-            with st.spinner("Loading live standings..."):
-                snapshot = snapshot_future.result()
-            st.session_state['current_season_snapshot'] = snapshot
-            _render_awards_section(snapshot)
+        matchups = matchups_future.result()
+        odds_events = odds_future.result()
+        snapshot = snapshot_future.result()
 
-        with matchups_slot.container():
-            with st.spinner("Loading this week's matchups and odds..."):
-                matchups = matchups_future.result()
-                odds_events = odds_future.result()
-                scoring_settings = get_scoring_settings(league_id, current_year)
-            st.session_state['home_live_data'] = {
-                'matchups': matchups, 'odds_events': odds_events,
-                'scoring_settings': scoring_settings, 'snapshot': snapshot,
-            }
-            if 'home_ats' not in st.session_state:
-                st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
-            _render_matchups_section(matchups, odds_events, scoring_settings, st.session_state['home_ats'])
+    st.session_state['current_season_snapshot'] = snapshot
+    st.session_state['home_live_data'] = {
+        'matchups': matchups, 'odds_events': odds_events,
+        'scoring_settings': get_scoring_settings(league_id, current_year), 'snapshot': snapshot,
+    }
+
+if 'home_ats' not in st.session_state:
+    st.session_state['home_ats'] = compute_ats_records({current_year: box_score_cache[current_year]})
+
+with content_slot.container():
+    _render_full_page()
 
 render_sidebar_info()
 render_footer()

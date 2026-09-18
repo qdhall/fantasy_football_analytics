@@ -1275,6 +1275,28 @@ def render_mini_board(rows, columns, name_key='owner', subtitle_key=None, key_pr
         st.markdown(html, unsafe_allow_html=True)
 
 
+def render_loading_screen(message="Loading..."):
+    """A single centered spinning-wheel + message, meant to sit inside an
+    st.empty() placeholder that later gets swapped for the real page content
+    once everything is ready - one clean reveal instead of sections popping
+    in individually over time. Built as one unbroken f-string line (not a
+    multi-line triple-quoted string) since Markdown treats 4+ leading spaces
+    as a literal indented code block, which would otherwise render this as
+    visible text instead of parsing it as real HTML/CSS."""
+    st.markdown(
+        f'<style>@keyframes ffLoadingSpin {{ to {{ transform: rotate(360deg); }} }}</style>'
+        f'<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;'
+        f'padding:110px 20px;gap:18px;">'
+        f'<div style="width:46px;height:46px;border-radius:50%;'
+        f'border:4px solid {PALETTE["gridline"]};border-top-color:{PALETTE["categorical"][3]};'
+        f'animation:ffLoadingSpin 0.8s linear infinite;"></div>'
+        f'<div style="color:{PALETTE["ink_muted"]};font-weight:600;font-size:0.95rem;'
+        f'letter-spacing:0.01em;">{message}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_sidebar_info():
     st.sidebar.markdown("---")
     st.sidebar.info(
