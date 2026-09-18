@@ -1,7 +1,6 @@
 import streamlit as st
 
-from common import configure_page, render_footer, render_leaderboard, render_sidebar_info
-from espn_data import build_front_office_history, get_credentials
+from common import configure_page, get_front_office_history, render_footer, render_leaderboard, render_sidebar_info
 from front_office_stats import compute_coach_rankings, compute_gm_rankings, format_gm_rubric
 
 configure_page("Front Office")
@@ -16,17 +15,7 @@ st.caption(
     "from that week's real roster."
 )
 
-league_id, espn_s2, swid = get_credentials()
-
-if 'front_office_history' not in st.session_state:
-    with st.spinner(
-        "Crunching draft picks and weekly box scores (2019-2026)... this pulls a LOT "
-        "more data than the other pages, so it can take a few minutes the first time"
-    ):
-        st.session_state['front_office_history'] = build_front_office_history(
-            league_id, 2019, 2026, espn_s2, swid)
-
-gm_history, coach_history, draft_log, luck_history = st.session_state['front_office_history']
+gm_history, coach_history, draft_log, luck_history = get_front_office_history()
 
 if not gm_history:
     st.error("Could not load draft/box score history. Check your league credentials.")

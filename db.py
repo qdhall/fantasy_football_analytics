@@ -244,13 +244,34 @@ def sync_season(espn_league_id, year, espn_s2, swid, league=None):
         for week in range(1, last_week + 1):
             is_playoff_week = actual_week_is_playoff_week(week - 1)
             for bs in box_scores_by_week.get(week, []):
-                if bs.home_team is None or bs.away_team is None:
+                if bs.home_team is None:
                     continue
-                if bs.home_team.team_id == bs.away_team.team_id:
-                    continue  # bye week - ESPN schedules a team against itself
+                # A bye (regular-season self-matchup, or a playoff bye where
+                # ESPN sets away_team to None entirely - seen for a top seed's
+                # first-round bye) still has a real lineup worth capturing.
+                is_bye = bs.away_team is None or bs.home_team.team_id == bs.away_team.team_id
 
                 home_owner = _ensure_owner(cur, league_id, get_owner_name(bs.home_team), owner_cache)
-                away_owner = _ensure_owner(cur, league_id, get_owner_name(bs.away_team), owner_cache)
+                away_owner = _ensure_owner(cur, league_id, get_owner_name(bs.away_team), owner_cache) if not is_bye else None
+
+                # player_weeks captures a bye team's own lineup too (unlike
+                # games, which only ever represents real matchups) - matches
+                # _compute_front_office_year's original behavior of crediting/
+                # debiting that week's coach and GM stats even on a bye,
+                # since ESPN still returns a real lineup+scores for it.
+                for owner_id, lineup in ((home_owner, bs.home_lineup), (away_owner, bs.away_lineup)):
+                    if owner_id is None:
+                        continue
+                    for p in (lineup or []):
+                        players_seen[p.playerId] = (p.name, p.position)
+                        player_week_rows.append((
+                            league_id, year, week, p.playerId, owner_id,
+                            p.position, p.slot_position, getattr(p, 'proTeam', None),
+                            p.points, p.projected_points,
+                        ))
+
+                if is_bye:
+                    continue
 
                 home_made_playoffs = playoff_team_count is not None and bs.home_team.standing <= playoff_team_count
                 away_made_playoffs = playoff_team_count is not None and bs.away_team.standing <= playoff_team_count
@@ -267,15 +288,6 @@ def sync_season(espn_league_id, year, espn_s2, swid, league=None):
                     league_id, year, week, is_playoff,
                     home_owner, bs.home_score, away_owner, bs.away_score, winner,
                 ))
-
-                for owner_id, lineup in ((home_owner, bs.home_lineup), (away_owner, bs.away_lineup)):
-                    for p in (lineup or []):
-                        players_seen[p.playerId] = (p.name, p.position)
-                        player_week_rows.append((
-                            league_id, year, week, p.playerId, owner_id,
-                            p.position, p.slot_position, getattr(p, 'proTeam', None),
-                            p.points, p.projected_points,
-                        ))
 
         # --- Draft picks -----------------------------------------------------
         try:
@@ -350,19 +362,21 @@ def sync_season(espn_league_id, year, espn_s2, swid, league=None):
                 bye_weeks,
             ])
 
+        # Row layout: [..., 11=made_playoffs, 12=is_champion, 13=is_runner_up,
+        # 14=is_dfl, 15=is_best_record, 16=is_most_points, 17=bye_weeks]
         if regular_season_complete and regular_records:
             dfl_owner = min(regular_records, key=lambda r: (r['wins'], r['points']))['owner_id']
             best_owner = max(regular_records, key=lambda r: (r['wins'], r['points']))['owner_id']
             for row in season_team_rows:
                 if row[2] == dfl_owner:
-                    row[13] = True
-                if row[2] == best_owner:
                     row[14] = True
+                if row[2] == best_owner:
+                    row[15] = True
         if points_records:
             most_points_owner = max(points_records, key=lambda r: r['points'])['owner_id']
             for row in season_team_rows:
                 if row[2] == most_points_owner:
-                    row[15] = True
+                    row[16] = True
 
         # --- Write everything ------------------------------------------------
         cur.execute(
@@ -466,14 +480,46 @@ def sync_season(espn_league_id, year, espn_s2, swid, league=None):
     }
 
 
+ENSURE_SYNCED_GRACE_MINUTES = 20
+
+
 def ensure_synced(espn_league_id, year, espn_s2, swid):
     """Sync-if-stale: called once per session per (league, year) before any
-    page reads from the DB. Cheap when already caught up (one lightweight
-    League() construction to read the live current week, one indexed
-    lookup) - only pays the real sync cost when the DB is actually behind."""
+    page reads from the DB. The actual staleness check is a plain DB read of
+    seasons.last_synced_at - if it's within ENSURE_SYNCED_GRACE_MINUTES, that's
+    trusted outright and this returns immediately, no live ESPN call at all.
+    A live League() construction (to read the real current week) only
+    happens once that grace window has passed - same tradeoff already made
+    for odds/matchups/snapshot's own short TTL caches: a few minutes of
+    possible staleness in exchange for not paying a live ESPN round trip on
+    every single fresh session. Constructing a League object was measured at
+    ~3-4s on its own, entirely sequential before any of a page's other
+    (parallelized) live calls even start - this was the single biggest
+    remaining latency source on every page that calls it."""
     session_key = f'db_synced_{espn_league_id}_{year}'
     if st.session_state.get(session_key):
         return
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.synced_through_week, s.last_synced_at FROM seasons s
+            JOIN leagues l ON l.id = s.league_id
+            WHERE l.espn_league_id = %s AND s.year = %s
+            """,
+            (espn_league_id, year),
+        )
+        row = cur.fetchone()
+
+    if row is not None:
+        synced_through, last_synced_at = row
+        if last_synced_at is not None:
+            age_minutes = (datetime.now(last_synced_at.tzinfo) - last_synced_at).total_seconds() / 60
+            if age_minutes < ENSURE_SYNCED_GRACE_MINUTES:
+                st.session_state[session_key] = True
+                return
+    else:
+        synced_through = -1
 
     try:
         league = League(espn_league_id, year, espn_s2=espn_s2, swid=swid)
@@ -482,18 +528,6 @@ def ensure_synced(espn_league_id, year, espn_s2, swid):
         print(f"ensure_synced: couldn't check live state for {year}: {e}")
         st.session_state[session_key] = True
         return
-
-    with _cursor() as cur:
-        cur.execute(
-            """
-            SELECT s.synced_through_week FROM seasons s
-            JOIN leagues l ON l.id = s.league_id
-            WHERE l.espn_league_id = %s AND s.year = %s
-            """,
-            (espn_league_id, year),
-        )
-        row = cur.fetchone()
-    synced_through = row[0] if row else -1
 
     if synced_through < target_week:
         with st.spinner(f"Syncing {year} season data..."):
@@ -557,6 +591,373 @@ def get_h2h_matrix(espn_league_id, start_year, end_year, record_type='all'):
                 matrix_data[row_owner][col_owner] = f"{wins}-{losses}"
 
     return pd.DataFrame(matrix_data).T[owners]
+
+
+_ROSTER_MOVE_ACTION_LABEL = {v: k for k, v in ACTION_KIND_MAP.items()}
+
+
+def get_roster_moves(espn_league_id, year, size=25):
+    """Replaces espn_data.get_recent_activity - same output shapes
+    ({'date','kind':'trade','team_a','players_a','team_b','players_b'} or
+    {'date','kind':'move','team','action','player','bid_amount'}), read from
+    the roster_moves table (populated as a side effect of sync_season) instead
+    of a live league.recent_activity() call, which is consistently the
+    slowest single ESPN call in the app (several seconds) - a DB read here is
+    what actually gets League News/Rumor Mill under the page-load target,
+    where a short TTL cache alone only helps repeat hits, not the first one."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT rm.kind, rm.occurred_at, o.display_name, cp.display_name,
+                   p.name, rm.bid_amount, rm.trade_group_id
+            FROM roster_moves rm
+            JOIN leagues l ON l.id = rm.league_id
+            JOIN owners o ON o.id = rm.owner_id
+            LEFT JOIN owners cp ON cp.id = rm.counterparty_owner_id
+            JOIN players p ON p.id = rm.player_id
+            WHERE l.espn_league_id = %s AND rm.year = %s
+            ORDER BY rm.occurred_at DESC
+            LIMIT %s
+            """,
+            (espn_league_id, year, size * 3),  # a trade is 2 rows per event - oversample, trim after grouping
+        )
+        rows = cur.fetchall()
+
+    trades = {}
+    entries = []
+    for kind, occurred_at, owner, counterparty, player, bid_amount, trade_group_id in rows:
+        if kind == 'trade':
+            entry = trades.get(trade_group_id)
+            if entry is None:
+                entry = {'date': occurred_at, 'kind': 'trade', 'team_a': owner,
+                          'players_a': [], 'team_b': counterparty, 'players_b': []}
+                trades[trade_group_id] = entry
+                entries.append(entry)
+            (entry['players_a'] if owner == entry['team_a'] else entry['players_b']).append(player)
+        else:
+            entries.append({
+                'date': occurred_at, 'kind': 'move', 'team': owner,
+                'action': _ROSTER_MOVE_ACTION_LABEL[kind], 'player': player, 'bid_amount': bid_amount,
+            })
+
+    entries.sort(key=lambda e: e['date'], reverse=True)
+    return entries[:size]
+
+
+def get_front_office_history(espn_league_id, start_year, end_year):
+    """Replaces espn_data.build_front_office_history - same
+    (gm_history, coach_history, draft_log, luck_history) tuple shape,
+    assembled from player_weeks/draft_picks/games/seasons instead of ~50
+    live weekly box-score calls per season (the heaviest fetch in the whole
+    app). Reuses espn_data._optimal_lineup_ids completely unchanged for the
+    coach-rankings optimal-lineup computation - DB rows are adapted into
+    lightweight namedtuples exposing the same .playerId/.position/.points
+    attributes it expects, so this is the exact already-verified algorithm,
+    not a reimplementation of it."""
+    from collections import namedtuple
+
+    from espn_data import _optimal_lineup_ids
+
+    _P = namedtuple('_P', ['playerId', 'position', 'points'])
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.year, s.dedicated_slots, s.flex_slots FROM seasons s
+            JOIN leagues l ON l.id = s.league_id
+            WHERE l.espn_league_id = %s AND s.year BETWEEN %s AND %s
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        slot_structure = {
+            year: ([tuple(x) for x in dedicated], [tuple(x) for x in flex])
+            for year, dedicated, flex in cur.fetchall()
+        }
+
+        cur.execute(
+            """
+            SELECT dp.year, dp.player_id, o.display_name, dp.round_num, dp.round_pick
+            FROM draft_picks dp
+            JOIN owners o ON o.id = dp.owner_id
+            JOIN leagues l ON l.id = dp.league_id
+            WHERE l.espn_league_id = %s AND dp.year BETWEEN %s AND %s
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        draft_by_player_year = {(year, pid): (owner, rn, rp) for year, pid, owner, rn, rp in cur.fetchall()}
+
+        cur.execute(
+            """
+            SELECT dp.year, dp.player_id, p.name
+            FROM draft_picks dp
+            JOIN players p ON p.id = dp.player_id
+            JOIN leagues l ON l.id = dp.league_id
+            WHERE l.espn_league_id = %s AND dp.year BETWEEN %s AND %s
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        draft_log = [{'year': y, 'player_id': pid, 'player_name': name} for y, pid, name in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT pw.year, pw.week, pw.player_id, p.name, pw.position,
+                   o.display_name, pw.slot, pw.actual_points, pw.projected_points
+            FROM player_weeks pw
+            JOIN players p ON p.id = pw.player_id
+            JOIN owners o ON o.id = pw.owner_id
+            JOIN leagues l ON l.id = pw.league_id
+            WHERE l.espn_league_id = %s AND pw.year BETWEEN %s AND %s
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        pw_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT g.year, g.week, oh.display_name, oa.display_name
+            FROM games g
+            JOIN owners oh ON oh.id = g.home_owner_id
+            JOIN owners oa ON oa.id = g.away_owner_id
+            JOIN leagues l ON l.id = g.league_id
+            WHERE l.espn_league_id = %s AND g.year BETWEEN %s AND %s
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        game_pairs = cur.fetchall()
+
+    by_year_week_owner = {}
+    by_year_player = {}
+    for year, week, player_id, name, position, owner, slot, actual, projected in pw_rows:
+        row = {'player_id': player_id, 'name': name, 'position': position, 'owner': owner,
+               'slot': slot, 'actual': float(actual), 'projected': float(projected)}
+        by_year_week_owner.setdefault((year, week, owner), []).append(row)
+        by_year_player.setdefault((year, player_id), []).append((week, owner, row))
+
+    def _new_gm_record():
+        return {'picks': [], 'acquisitions': []}
+
+    def _new_coach_record():
+        return {'correct_calls': 0, 'total_calls': 0, 'actual_points': 0.0, 'optimal_points': 0.0, 'weekly_log': []}
+
+    def _new_luck_record():
+        return {'boom_wins': 0, 'games_played': 0}
+
+    gm_history, coach_history, luck_history = {}, {}, {}
+
+    # --- Coach rankings: optimal lineup per (year, week, owner) ------------
+    for (year, week, owner), rows in by_year_week_owner.items():
+        dedicated_slots, flex_slots = slot_structure.get(year, ([], []))
+        starters = [r for r in rows if r['slot'] not in ('BE', 'IR')]
+        available = [r for r in rows if r['slot'] != 'IR']
+        if not starters:
+            continue
+        optimal_ids = _optimal_lineup_ids(
+            [_P(r['player_id'], r['position'], r['actual']) for r in available], dedicated_slots, flex_slots)
+        actual_ids = {r['player_id'] for r in starters}
+        week_actual = sum(r['actual'] for r in starters)
+        week_optimal = sum(r['actual'] for r in available if r['player_id'] in optimal_ids)
+
+        coach = coach_history.setdefault(owner, _new_coach_record())
+        coach['correct_calls'] += len(actual_ids & optimal_ids)
+        coach['total_calls'] += len(starters)
+        coach['actual_points'] += week_actual
+        coach['optimal_points'] += week_optimal
+        coach['weekly_log'].append({
+            'year': year, 'week': week, 'owner': owner,
+            'correct': len(actual_ids & optimal_ids), 'total': len(starters),
+            'points_left': week_optimal - week_actual,
+        })
+
+    # --- Luck: boom wins need both sides of the same game at once ----------
+    for year, week, home_owner, away_owner in game_pairs:
+        home_rows = by_year_week_owner.get((year, week, home_owner), [])
+        away_rows = by_year_week_owner.get((year, week, away_owner), [])
+        home_starters = [r for r in home_rows if r['slot'] not in ('BE', 'IR')]
+        away_starters = [r for r in away_rows if r['slot'] not in ('BE', 'IR')]
+        if not home_starters or not away_starters:
+            continue
+        home_actual = sum(r['actual'] for r in home_starters)
+        away_actual = sum(r['actual'] for r in away_starters)
+        home_projected = sum(r['projected'] for r in home_starters)
+        away_projected = sum(r['projected'] for r in away_starters)
+        for owner, own_actual, own_projected, opp_actual in (
+            (home_owner, home_actual, home_projected, away_actual),
+            (away_owner, away_actual, away_projected, home_actual),
+        ):
+            luck = luck_history.setdefault(owner, _new_luck_record())
+            luck['games_played'] += 1
+            if own_actual > opp_actual and own_projected < opp_actual:
+                luck['boom_wins'] += 1
+
+    # --- GM: each player's weeks grouped by owner within a year, split
+    # picks (matches the draft record) vs acquisitions (everyone else) -----
+    for (year, player_id), weeks in by_year_player.items():
+        weeks_by_owner = {}
+        for week, owner, row in weeks:
+            weeks_by_owner.setdefault(owner, []).append((week, row))
+        drafted = draft_by_player_year.get((year, player_id))
+        drafting_owner = drafted[0] if drafted else None
+
+        for owner, owner_weeks in weeks_by_owner.items():
+            total_actual = sum(r['actual'] for _, r in owner_weeks)
+            total_projected = sum(r['projected'] for _, r in owner_weeks)
+            ir_weeks = sum(1 for _, r in owner_weeks if r['slot'] == 'IR')
+            decision = {
+                'year': year, 'player_id': player_id,
+                'player_name': owner_weeks[0][1]['name'], 'position': owner_weeks[0][1]['position'],
+                'total_actual': total_actual, 'total_projected': total_projected,
+                'value': total_actual - total_projected, 'scale': total_projected,
+                'weeks_rostered': len(owner_weeks), 'ir_weeks': ir_weeks,
+                'weekly': [
+                    {'week': w, 'actual': r['actual'], 'projected': r['projected'], 'slot': r['slot'], 'owner': owner}
+                    for w, r in owner_weeks
+                ],
+            }
+            gm = gm_history.setdefault(owner, _new_gm_record())
+            if owner == drafting_owner:
+                decision['round_num'], decision['round_pick'] = drafted[1], drafted[2]
+                gm['picks'].append(decision)
+            else:
+                gm['acquisitions'].append(decision)
+
+    return gm_history, coach_history, draft_log, luck_history
+
+
+def get_scoring_settings(espn_league_id, year):
+    """Replaces espn_data.get_league_scoring_settings - {statID: points},
+    read from seasons.scoring_settings instead of a live League() call.
+    Scoring rules don't change mid-season, so this is safe to serve straight
+    from whatever sync_season last captured; callers should call
+    ensure_synced() first the same as any other DB read here."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.scoring_settings FROM seasons s
+            JOIN leagues l ON l.id = s.league_id
+            WHERE l.espn_league_id = %s AND s.year = %s
+            """,
+            (espn_league_id, year),
+        )
+        row = cur.fetchone()
+    return row[0] if row else {}
+
+
+def get_league_history(espn_league_id, start_year, end_year):
+    """Replaces espn_data.build_league_history / common.get_league_history -
+    same per-owner dict shape (years, total_wins/losses/ties, total_points,
+    playoff_wins/losses/ties, playoff_appearances, championships,
+    championship_appearances, champion_years, dfl_finishes, dfl_years,
+    best_record_seasons/years, most_points_seasons/years, bye_weeks,
+    season_points, playoff_years, game_log), assembled from season_teams +
+    v_owner_game_log instead of walking ESPN live. The resolved flags
+    (is_champion/is_dfl/etc.) were computed once at sync time using the
+    exact same tiebreak logic _compute_league_history_year has - see
+    db.sync_season."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT o.display_name, st.year, st.wins, st.losses, st.ties, st.points_for,
+                   st.made_playoffs, st.is_champion, st.is_runner_up, st.is_dfl,
+                   st.is_best_record, st.is_most_points, st.bye_weeks
+            FROM season_teams st
+            JOIN owners o ON o.id = st.owner_id
+            JOIN leagues l ON l.id = st.league_id
+            WHERE l.espn_league_id = %s AND st.year BETWEEN %s AND %s
+            ORDER BY o.display_name, st.year
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        season_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT o.display_name,
+                   count(*) FILTER (WHERE v.result = 'W' AND v.is_playoff),
+                   count(*) FILTER (WHERE v.result = 'L' AND v.is_playoff),
+                   count(*) FILTER (WHERE v.result = 'T' AND v.is_playoff)
+            FROM v_owner_game_log v
+            JOIN leagues l ON l.id = v.league_id
+            JOIN owners o ON o.id = v.owner_id
+            WHERE l.espn_league_id = %s AND v.year BETWEEN %s AND %s
+            GROUP BY o.display_name
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        playoff_wlt = {row[0]: row[1:] for row in cur.fetchall()}
+
+        cur.execute(
+            """
+            SELECT o.display_name, v.year, v.week, v.is_playoff, v.points,
+                   v.opp_points, opp.display_name, v.result
+            FROM v_owner_game_log v
+            JOIN leagues l ON l.id = v.league_id
+            JOIN owners o ON o.id = v.owner_id
+            JOIN owners opp ON opp.id = v.opponent_id
+            WHERE l.espn_league_id = %s AND v.year BETWEEN %s AND %s
+            ORDER BY o.display_name, v.year, v.week
+            """,
+            (espn_league_id, start_year, end_year),
+        )
+        game_logs = {}
+        for owner, year, week, is_playoff, points, opp_points, opponent, result in cur.fetchall():
+            game_logs.setdefault(owner, []).append({
+                'year': year, 'week': week, 'is_playoff': is_playoff,
+                'points': float(points), 'opp_points': float(opp_points),
+                'opponent': opponent, 'result': result,
+            })
+
+    def _new_owner_record():
+        return {
+            'years': [], 'total_wins': 0, 'total_losses': 0, 'total_ties': 0, 'total_points': 0.0,
+            'playoff_wins': 0, 'playoff_losses': 0, 'playoff_ties': 0, 'playoff_appearances': 0,
+            'championships': 0, 'championship_appearances': 0, 'champion_years': set(),
+            'dfl_finishes': 0, 'dfl_years': set(),
+            'best_record_seasons': 0, 'best_record_years': set(),
+            'most_points_seasons': 0, 'most_points_years': set(),
+            'season_points': {}, 'playoff_years': set(), 'bye_weeks': 0, 'game_log': [],
+        }
+
+    owners = {}
+    for (owner, year, wins, losses, ties, points_for, made_playoffs, is_champion,
+         is_runner_up, is_dfl, is_best_record, is_most_points, bye_weeks) in season_rows:
+        rec = owners.setdefault(owner, _new_owner_record())
+        rec['years'].append(year)
+        rec['total_wins'] += wins
+        rec['total_losses'] += losses
+        rec['total_ties'] += ties
+        rec['total_points'] += float(points_for)
+        rec['bye_weeks'] += bye_weeks
+        rec['season_points'][year] = float(points_for)
+        if made_playoffs:
+            rec['playoff_appearances'] += 1
+            rec['playoff_years'].add(year)
+        if is_champion:
+            rec['championships'] += 1
+            rec['championship_appearances'] += 1
+            rec['champion_years'].add(year)
+        elif is_runner_up:
+            rec['championship_appearances'] += 1
+        if is_dfl:
+            rec['dfl_finishes'] += 1
+            rec['dfl_years'].add(year)
+        if is_best_record:
+            rec['best_record_seasons'] += 1
+            rec['best_record_years'].add(year)
+        if is_most_points:
+            rec['most_points_seasons'] += 1
+            rec['most_points_years'].add(year)
+
+    for owner, (pw, pl, pt) in playoff_wlt.items():
+        if owner in owners:
+            owners[owner]['playoff_wins'] = pw
+            owners[owner]['playoff_losses'] = pl
+            owners[owner]['playoff_ties'] = pt
+
+    for owner, log in game_logs.items():
+        if owner in owners:
+            owners[owner]['game_log'] = log
+
+    return owners
 
 
 def get_season_box_scores(espn_league_id, year):

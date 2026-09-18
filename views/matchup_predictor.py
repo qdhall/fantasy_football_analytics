@@ -13,11 +13,10 @@ from common import (
     render_sidebar_info,
     render_sportsbook_card,
 )
-from db import ensure_synced, get_season_box_scores
+from db import ensure_synced, get_scoring_settings, get_season_box_scores
 from espn_data import (
     get_credentials,
     get_current_week_matchups,
-    get_league_scoring_settings,
 )
 from matchup_predictor_stats import (
     compute_ats_records,
@@ -71,14 +70,13 @@ if 2026 not in box_score_cache:
     box_score_cache[2026] = get_season_box_scores(league_id, 2026)
 
 with st.spinner("Loading this week's matchups and odds..."):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         matchups_future = executor.submit(get_current_week_matchups, league_id, 2026, espn_s2, swid)
         odds_future = executor.submit(fetch_current_nfl_odds)
-        scoring_future = executor.submit(get_league_scoring_settings, league_id, 2026, espn_s2, swid)
 
         matchups = matchups_future.result()
         odds_events = odds_future.result()
-        scoring_settings = scoring_future.result()
+        scoring_settings = get_scoring_settings(league_id, 2026)
 
 if not matchups:
     st.info("No live matchups found for the current week yet.", icon=":material/schedule:")

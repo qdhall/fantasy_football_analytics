@@ -6,7 +6,10 @@ from datetime import datetime
 
 import streamlit as st
 
-from espn_data import build_league_history, get_credentials
+from db import ensure_synced
+from db import get_front_office_history as _db_get_front_office_history
+from db import get_league_history as _db_get_league_history
+from espn_data import get_credentials
 
 # Validated light-mode palette (see the dataviz skill's reference palette) - the same
 # eight categorical hues and surfaces used across every chart and card in the app,
@@ -47,12 +50,28 @@ RANK_ACCENT = {
 
 def get_league_history(start_year=2019, end_year=2026):
     """Load (and cache in session_state) the full per-owner league history used by
-    the All-Time Rankings, League Records, Wall of Shame, and League Trivia pages."""
+    the All-Time Rankings, League Records, Wall of Shame, and League Trivia pages
+    (and most others) - a fast Postgres read instead of a live ESPN walk, per
+    db.get_league_history."""
     if 'league_history' not in st.session_state:
         league_id, espn_s2, swid = get_credentials()
-        with st.spinner(f"Crunching league history ({start_year}-{end_year})... this takes a minute the first time"):
-            st.session_state['league_history'] = build_league_history(league_id, start_year, end_year, espn_s2, swid)
+        ensure_synced(league_id, end_year, espn_s2, swid)
+        st.session_state['league_history'] = _db_get_league_history(league_id, start_year, end_year)
     return st.session_state['league_history']
+
+
+def get_front_office_history(start_year=2019, end_year=2026):
+    """Load (and cache in session_state) the (gm_history, coach_history,
+    draft_log, luck_history) tuple used by Front Office, Luck Index, League
+    Trivia, and Team Killers - a fast Postgres read instead of the ~50
+    live weekly box-score calls per season db.get_front_office_history
+    replaces (the heaviest fetch in the app - what used to take "a few
+    minutes" on a fresh session)."""
+    if 'front_office_history' not in st.session_state:
+        league_id, espn_s2, swid = get_credentials()
+        ensure_synced(league_id, end_year, espn_s2, swid)
+        st.session_state['front_office_history'] = _db_get_front_office_history(league_id, start_year, end_year)
+    return st.session_state['front_office_history']
 
 
 def configure_page(page_title, page_icon="🏈"):

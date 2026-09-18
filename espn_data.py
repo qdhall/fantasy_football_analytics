@@ -615,6 +615,7 @@ def build_season_box_scores(league_id, year, espn_s2, swid):
     return data
 
 
+@st.cache_data(ttl=60)
 def get_current_week_matchups(league_id, year, espn_s2, swid):
     """This week's matchups with full lineups - for the Matchup Predictor,
     which needs the live/upcoming week specifically. This is the one place
@@ -622,8 +623,11 @@ def get_current_week_matchups(league_id, year, espn_s2, swid):
     other caller wants to exclude the in-progress week (that's the bug fixed
     elsewhere in this file), but a predictor's entire job is to project that
     exact week, so league.box_scores() is called with no week argument -
-    espn_api then defaults to league.current_week itself. Never disk-cached
-    (always live, same reasoning as get_current_season_snapshot).
+    espn_api then defaults to league.current_week itself. Process-wide
+    60s TTL cache (same pattern/reasoning as odds_data.fetch_current_nfl_odds)
+    - short enough to track live scoring closely, long enough that a burst of
+    page loads/reruns across every session costs one real ESPN call instead
+    of one per request.
 
     Returns [{home_owner, home_team_name, home_score, home_lineup, home_projected,
     away_owner, away_team_name, away_score, away_lineup, away_projected}, ...]."""
@@ -992,13 +996,16 @@ def load_real_teams_data_full(league_id, year, espn_s2, swid):
         return {}
 
 
+@st.cache_data(ttl=120)
 def get_current_season_snapshot(league_id, year, espn_s2, swid):
     """Live standings + rosters for the home page's award/playoff race widgets.
-    Always freshly fetched, never disk-cached - by definition the current season is
-    still in progress, so yesterday's snapshot would be stale by tomorrow. Distinct
-    from load_real_teams_data_full (which returns a pandas DataFrame per team,
-    built for the Team Overview/Player Analysis pages) so home_stats.py can stay
-    pandas-free like the other *_stats.py computation modules."""
+    Process-wide 120s TTL cache - by definition the current season is still in
+    progress so this can't be cached forever, but a couple of minutes of
+    staleness is an easy trade for turning every page load's live ESPN call
+    into a shared one. Distinct from load_real_teams_data_full (which returns
+    a pandas DataFrame per team, built for the Team Overview/Player Analysis
+    pages) so home_stats.py can stay pandas-free like the other *_stats.py
+    computation modules."""
     try:
         league = League(league_id, year, espn_s2=espn_s2, swid=swid)
     except Exception as e:
@@ -1042,11 +1049,13 @@ def get_current_season_snapshot(league_id, year, espn_s2, swid):
     }
 
 
+@st.cache_data(ttl=300)
 def get_recent_activity(league_id, year, espn_s2, swid, size=25):
     """Recent trades/waiver/free-agent moves for the League News page's
-    Trades & Acquisitions feed - always freshly fetched, never disk-cached
-    (same reasoning as get_current_season_snapshot: this is inherently "what
-    just happened" data, there's no "final" version of it to cache).
+    Trades & Acquisitions feed. Process-wide 300s TTL cache - roster moves
+    don't happen second-to-second, so this is an easy trade of a few minutes'
+    staleness for turning every page load's live ESPN call into one shared
+    call, same reasoning as odds_data.fetch_current_nfl_odds.
 
     espn_api's Activity.actions is a list of (Team, action_str, Player,
     bid_amount) tuples; a trade emits a TRADE_SENT/TRADE_RECEIVED pair per
@@ -1184,12 +1193,20 @@ def _optimal_lineup_ids(players, dedicated_slots, flex_slots):
     scorers at that exact position, then fill flex slots from the best leftover skill
     player. This greedy order is optimal for this slot structure - every flex-eligible
     position already got its best players placed in its own dedicated slots first, so
-    the flex slot just needs the single best player left in the pool."""
+    the flex slot just needs the single best player left in the pool.
+
+    Sorts break a points tie by playerId - without a secondary key, two
+    players tied for the last slot resolve by whatever order they happened
+    to arrive in `players`, which isn't guaranteed stable across callers
+    (e.g. this function's live ESPN caller vs. db.get_front_office_history's
+    SQL-ordered caller could legitimately disagree on which tied player
+    "counts" as optimal, even though both totals are identical). A
+    deterministic secondary key means every caller agrees."""
     by_position = {}
     for p in players:
         by_position.setdefault(p.position, []).append(p)
     for plist in by_position.values():
-        plist.sort(key=lambda p: p.points, reverse=True)
+        plist.sort(key=lambda p: (p.points, p.playerId), reverse=True)
 
     used_ids = set()
     for slot, count in dedicated_slots:
@@ -1201,7 +1218,7 @@ def _optimal_lineup_ids(players, dedicated_slots, flex_slots):
     for slot, count in flex_slots:
         eligible_positions = slot.split('/')
         leftover = [p for pos in eligible_positions for p in by_position.get(pos, [])]
-        leftover.sort(key=lambda p: p.points, reverse=True)
+        leftover.sort(key=lambda p: (p.points, p.playerId), reverse=True)
         for p in leftover[:count]:
             used_ids.add(p.playerId)
             by_position[p.position].remove(p)

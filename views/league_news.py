@@ -3,7 +3,8 @@ from datetime import datetime
 import streamlit as st
 
 from common import PALETTE, configure_page, get_league_history, render_footer, render_sidebar_info, render_storyline_feed
-from espn_data import get_credentials, get_recent_activity
+from db import ensure_synced, get_roster_moves
+from espn_data import get_credentials
 from home_stats import compute_storylines
 
 configure_page("League News")
@@ -29,8 +30,8 @@ st.markdown("---")
 # --- Trades & Acquisitions ------------------------------------------------------
 st.subheader(":material/swap_horiz: Trades & Acquisitions")
 
-with st.spinner("Loading recent league activity..."):
-    recent_activity = get_recent_activity(league_id, current_year, espn_s2, swid, size=25)
+ensure_synced(league_id, current_year, espn_s2, swid)
+recent_activity = get_roster_moves(league_id, current_year, size=25)
 
 ACTION_LABELS = {
     'FA ADDED': 'signed as a free agent',

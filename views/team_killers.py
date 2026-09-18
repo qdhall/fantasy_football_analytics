@@ -1,8 +1,8 @@
 import streamlit as st
 
-from common import PALETTE, configure_page, get_league_history, render_footer, render_leaderboard, render_sidebar_info
+from common import PALETTE, configure_page, get_front_office_history, get_league_history, render_footer, render_leaderboard, render_sidebar_info
 from do_not_draft_stats import compute_do_not_draft_candidates, format_curse_rubric
-from espn_data import build_front_office_history, get_active_player_ids, get_credentials
+from espn_data import get_active_player_ids, get_credentials
 
 DISPLAY_COUNT = 50
 
@@ -18,15 +18,7 @@ if not owners:
     st.stop()
 
 league_id, espn_s2, swid = get_credentials()
-if 'front_office_history' not in st.session_state:
-    with st.spinner(
-        "Crunching draft picks and weekly box scores (2019-2026)... this pulls a LOT "
-        "more data than the rest of this page, so it can take a few minutes the first time"
-    ):
-        st.session_state['front_office_history'] = build_front_office_history(
-            league_id, 2019, 2026, espn_s2, swid)
-
-gm_history, coach_history, draft_log, luck_history = st.session_state['front_office_history']
+gm_history, coach_history, draft_log, luck_history = get_front_office_history()
 
 candidates = compute_do_not_draft_candidates(gm_history, owners)
 

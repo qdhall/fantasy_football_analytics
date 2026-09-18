@@ -12,12 +12,11 @@ from common import (
     render_sidebar_info,
     render_trivia_carousel,
 )
-from db import ensure_synced, get_season_box_scores
+from db import ensure_synced, get_scoring_settings, get_season_box_scores
 from espn_data import (
     get_credentials,
     get_current_season_snapshot,
     get_current_week_matchups,
-    get_league_scoring_settings,
 )
 from home_stats import compute_award_races
 from league_stats import compute_league_trivia
@@ -85,16 +84,15 @@ if current_year not in box_score_cache:
 
 if 'home_live_data' not in st.session_state:
     with st.spinner(f"Pulling live {current_year} matchups, odds, and standings..."):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             matchups_future = executor.submit(get_current_week_matchups, league_id, current_year, espn_s2, swid)
             odds_future = executor.submit(fetch_current_nfl_odds)
-            scoring_future = executor.submit(get_league_scoring_settings, league_id, current_year, espn_s2, swid)
             snapshot_future = executor.submit(get_current_season_snapshot, league_id, current_year, espn_s2, swid)
 
             st.session_state['home_live_data'] = {
                 'matchups': matchups_future.result(),
                 'odds_events': odds_future.result(),
-                'scoring_settings': scoring_future.result(),
+                'scoring_settings': get_scoring_settings(league_id, current_year),
                 'snapshot': snapshot_future.result(),
             }
 
