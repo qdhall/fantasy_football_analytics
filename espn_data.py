@@ -28,6 +28,27 @@ def _cache_path(kind, league_id, year):
     return CACHE_DIR / f"{kind}_v{CACHE_SCHEMA_VERSION}_{league_id}_{year}.pkl"
 
 
+def _last_completed_week(league, year):
+    """The last NFL week whose games have actually been played - safe to use
+    as an inclusive upper bound when iterating a season's weeks.
+
+    ESPN's own league.current_week (scoringPeriodId) advances to the next
+    week as early as the Tuesday before that week's Thursday-night kickoff -
+    days before a single snap of it has been played. Using it directly means
+    every score-summing loop in this file would pull in a week that hasn't
+    happened yet, where every team's score is a placeholder 0.0 - which is
+    exactly what caused a real bug: Wall of Shame's "Least Points in a Game"
+    showing a 12-way tie at 0.0 for a week that simply hadn't started.
+
+    A fully-completed past season doesn't have this problem - its
+    current_week is frozen at that season's real final week once the season
+    is over - so the -1 adjustment only applies to the live, still-in-progress
+    season."""
+    if _is_year_final(year):
+        return league.current_week
+    return max(0, league.current_week - 1)
+
+
 def _r2_client_and_bucket():
     """An (s3_client, bucket_name) pair if R2 credentials are configured in
     secrets, else (None, None). Local disk alone is fine for local dev, but on
@@ -176,7 +197,7 @@ def get_all_time_h2h_by_scores_fixed(league_id, start_year, end_year, espn_s2=No
             # they're actually in.
             playoff_team_count = getattr(league.settings, 'playoff_team_count', None)
 
-            max_week = league.current_week
+            max_week = _last_completed_week(league, year)
             processed_games = set()
 
             for week in range(max_week):
@@ -362,7 +383,7 @@ def _compute_all_time_stats_year(league_id, year, espn_s2, swid):
 
             # Process each completed week's games (skip future/unplayed weeks,
             # which carry 0-0 placeholder scores that would otherwise look like ties)
-            for week_num in range(min(len(team.scores), league.current_week)):
+            for week_num in range(min(len(team.scores), _last_completed_week(league, year))):
                 if week_num < len(team.schedule) and team.scores[week_num] is not None:
                     opponent = team.schedule[week_num]
                     if hasattr(opponent, 'scores') and week_num < len(opponent.scores) and opponent.team_id != team.team_id:
@@ -458,7 +479,7 @@ def _compute_owner_trend_year(league_id, year, espn_s2, swid):
             wins = losses = ties = 0
             points = 0.0
 
-            for week_num in range(min(len(team.scores), league.current_week)):
+            for week_num in range(min(len(team.scores), _last_completed_week(league, year))):
                 if week_num < len(team.schedule) and team.scores[week_num] is not None:
                     opponent = team.schedule[week_num]
                     if hasattr(opponent, 'scores') and week_num < len(opponent.scores) and opponent.team_id != team.team_id:
@@ -533,7 +554,7 @@ def _compute_season_box_scores(league_id, year, espn_s2, swid):
     weeks = {}
     try:
         league = League(league_id, year, espn_s2=espn_s2, swid=swid)
-        for week in range(1, league.current_week + 1):
+        for week in range(1, _last_completed_week(league, year) + 1):
             try:
                 box_scores = league.box_scores(week=week)
             except Exception as e:
@@ -635,7 +656,7 @@ def _compute_league_history_year(league_id, year, espn_s2, swid):
         return year_owners.setdefault(name, _new_owner_record())
 
     playoff_start_week = get_playoff_start_week(year)
-    max_week = league.current_week
+    max_week = _last_completed_week(league, year)
     # ESPN schedules every team into games during "playoff weeks" - the top
     # seeds play the real playoff bracket, everyone else plays a consolation
     # bracket. Only a team's regular-season seed tells us which bracket they're
@@ -1134,7 +1155,7 @@ def _compute_front_office_year(league_id, year, espn_s2, swid):
     # player_id -> accumulated actual/projected/weeks while rostered, this season
     player_season = {}
 
-    for week in range(1, league.current_week + 1):
+    for week in range(1, _last_completed_week(league, year) + 1):
         try:
             box_scores = league.box_scores(week=week)
         except Exception as e:

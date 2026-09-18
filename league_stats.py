@@ -4,10 +4,14 @@ Nothing here talks to the ESPN API or Streamlit - just stats derivation, so it's
 to unit-test or tweak the GOAT weighting/tiers without touching data-fetching code.
 """
 
+from datetime import datetime
+
 # Minimum sample sizes so a single lucky/unlucky stretch can't claim a percentage record
 MIN_GAMES_FOR_RECORD = 10
 MIN_PLAYOFF_GAMES_FOR_RECORD = 2
 MIN_RIVALRY_GAMES = 5
+CLOSE_GAME_MARGIN = 10.0
+DOMINANT_WIN_MARGIN = 40.0
 
 GOAT_WEIGHTS = {
     'championships': 4,
@@ -206,10 +210,24 @@ def _all_games(owners):
     return games
 
 
+def _is_season_final(year):
+    """Mirrors espn_data._is_year_final's rule (a season is done once we're
+    in a later calendar year than it started in), reimplemented locally so
+    this module stays pure computation with no ESPN/Streamlit dependency.
+    Any per-season TOTAL (season_points) needs this guard - unlike
+    individual game entries, which espn_data already only ever records for
+    weeks that have actually finished, a season's running total keeps
+    growing all season long, so a season 1-2 weeks in has a tiny partial
+    total that isn't comparable to a finished season's real total."""
+    return year < datetime.now().year
+
+
 def _all_seasons(owners):
     seasons = []
     for owner, rec in owners.items():
         for year, points in rec['season_points'].items():
+            if not _is_season_final(year):
+                continue
             seasons.append({'owner': owner, 'year': year, 'points': points})
     return seasons
 
@@ -238,6 +256,19 @@ def _longest_streak(game_log, result):
     best = current = 0
     for g in sorted(game_log, key=lambda g: (g['year'], g['week'])):
         if g['result'] == result:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def _close_game_streak(game_log):
+    """Longest run of consecutive games (regardless of W/L) decided by under
+    CLOSE_GAME_MARGIN - a streak of nail-biters, win or lose."""
+    best = current = 0
+    for g in sorted(game_log, key=lambda g: (g['year'], g['week'])):
+        if abs(g['points'] - g['opp_points']) < CLOSE_GAME_MARGIN:
             current += 1
             best = max(best, current)
         else:
@@ -285,19 +316,19 @@ def _season_games_and_wins(owners):
     return seasons
 
 
-def _best_points_per_game_season(owners):
-    """(value, owner, year) for the single season with the highest
-    points-per-game, minimum MIN_GAMES_FOR_RECORD games that season."""
-    best_value = best_owner = best_year = None
+def _points_per_game_season_entries(owners):
+    """[{owner, year, ppg}, ...] for every (owner, season) with at least
+    MIN_GAMES_FOR_RECORD games that season."""
+    entries = []
     for owner, rec in owners.items():
         for year, points in rec['season_points'].items():
+            if not _is_season_final(year):
+                continue
             games = sum(1 for g in rec['game_log'] if g['year'] == year)
             if games < MIN_GAMES_FOR_RECORD:
                 continue
-            ppg = points / games
-            if best_value is None or ppg > best_value:
-                best_value, best_owner, best_year = ppg, owner, year
-    return best_value, best_owner, best_year
+            entries.append({'owner': owner, 'year': year, 'ppg': points / games})
+    return entries
 
 
 def _longest_losing_season_streak(owner, rec, season_games):
@@ -397,16 +428,151 @@ def compute_group_records(owners):
     records['longest_playoff_streak'] = _record(
         "Longest Playoff Appearance Streak", playoff_streak_value, playoff_streak_holders, fmt="{:.0f} seasons")
 
-    ppg_value, ppg_owner, ppg_year = _best_points_per_game_season(owners)
-    if ppg_value is not None:
+    ppg_entries = _points_per_game_season_entries(owners)
+    if ppg_entries:
+        ppg_value, ppg_items = _extreme_items(ppg_entries, lambda e: e['ppg'])
         records['best_points_per_game_season'] = _record(
-            "Best Points-Per-Game Season", ppg_value, [ppg_owner],
-            fmt="{:.1f} pts/game", detail=f"{ppg_year} season")
+            "Best Points-Per-Game Season", ppg_value, _dedupe(i['owner'] for i in ppg_items),
+            fmt="{:.1f} pts/game", detail=_tie_detail(ppg_items, lambda e: f"{e['year']} season"))
 
     games_played_value, games_played_holders = _leaders(
         owners, lambda r: r['total_wins'] + r['total_losses'] + r['total_ties'])
     records['most_career_games'] = _record(
         "Most Career Games Played", games_played_value, games_played_holders, fmt="{:.0f} games")
+
+    # Total points scored minus total points allowed, career-wide - a
+    # different axis than raw win totals or point totals: this rewards teams
+    # that win AND win big, and penalizes teams propped up by a few
+    # razor-thin wins against otherwise-strong opponents.
+    point_diff_value, point_diff_holders = _leaders(
+        owners, lambda r: r['total_points'] - sum(g['opp_points'] for g in r['game_log']))
+    records['best_point_differential'] = _record(
+        "Best All-Time Point Differential", point_diff_value, point_diff_holders, fmt="{:+,.1f}")
+
+    # Weeks where an owner's own score was the single highest in the ENTIRE
+    # league that week (not just their own matchup) - a weekly-granularity
+    # sibling to "Most Scoring-Leader Seasons". Ties share credit, same as a
+    # real league would call a shared week's high score.
+    weekly_max = {}
+    for g in games:
+        key = (g['year'], g['week'])
+        weekly_max[key] = max(weekly_max.get(key, float('-inf')), g['points'])
+    weekly_title_counts = {}
+    for g in games:
+        if g['points'] == weekly_max[(g['year'], g['week'])]:
+            weekly_title_counts[g['owner']] = weekly_title_counts.get(g['owner'], 0) + 1
+    if weekly_title_counts:
+        title_entries = [{'owner': o, 'count': c} for o, c in weekly_title_counts.items()]
+        title_value, title_items = _extreme_items(title_entries, lambda e: e['count'])
+        records['most_weekly_scoring_titles'] = _record(
+            "Most Weekly Scoring Titles", title_value, _dedupe(i['owner'] for i in title_items),
+            fmt="{:.0f} weeks")
+
+    playoff_ppg_entries = []
+    for owner, rec in owners.items():
+        playoff_games_log = [g for g in rec['game_log'] if g['is_playoff']]
+        if len(playoff_games_log) < MIN_PLAYOFF_GAMES_FOR_RECORD:
+            continue
+        playoff_ppg_entries.append({
+            'owner': owner,
+            'ppg': sum(g['points'] for g in playoff_games_log) / len(playoff_games_log),
+        })
+    if playoff_ppg_entries:
+        playoff_ppg_value, playoff_ppg_items = _extreme_items(playoff_ppg_entries, lambda e: e['ppg'])
+        records['best_playoff_ppg'] = _record(
+            "Best Playoff Points-Per-Game", playoff_ppg_value, _dedupe(i['owner'] for i in playoff_ppg_items),
+            fmt="{:,.1f} pts/game")
+
+    # "Clutch" wins - decided by a single-digit-to-low-double-digit margin,
+    # the kind that come down to a garbage-time flex or a Monday-night kicker.
+    close_wins_value, close_wins_holders = _leaders(
+        owners,
+        lambda r: sum(
+            1 for g in r['game_log']
+            if g['result'] == 'W' and (g['points'] - g['opp_points']) < CLOSE_GAME_MARGIN
+        ),
+    )
+    records['most_clutch_wins'] = _record(
+        "Most Clutch Wins (Under 10 Points)", close_wins_value, close_wins_holders, fmt="{:.0f} wins")
+
+    # A title won while ALSO owning the league's best regular-season record
+    # that same year - no fluky bracket runs, no backing in. Gated to owners
+    # who've actually done it at least once, so a league where nobody has
+    # simply omits the card rather than showing everyone tied at zero.
+    wire_to_wire_value, wire_to_wire_holders = _leaders(
+        owners,
+        lambda r: len(r['champion_years'] & r['best_record_years']),
+        minimum_fn=lambda r: len(r['champion_years'] & r['best_record_years']) >= 1,
+    )
+    records['wire_to_wire_titles'] = _record(
+        "Wire-to-Wire Titles (Champion + Best Record, Same Season)",
+        wire_to_wire_value, wire_to_wire_holders, fmt="{:.0f}")
+
+    # Championships won per trip to the title game - a RATE, not a raw count,
+    # so a 1-for-1 owner can outrank a 2-for-3 owner here even though the
+    # latter has more rings; "Most Championships" already covers raw volume.
+    conversion_value, conversion_holders = _leaders(
+        owners,
+        lambda r: (r['championships'] / r['championship_appearances']) if r['championship_appearances'] > 0 else None,
+        minimum_fn=lambda r: r['championship_appearances'] >= 1,
+    )
+    conversion_detail = None
+    if conversion_holders:
+        rec = owners[conversion_holders[0]]
+        conversion_detail = f"{rec['championships']}-for-{rec['championship_appearances']} in title games"
+    records['best_championship_conversion'] = _record(
+        "Best Championship Conversion Rate", conversion_value, conversion_holders, fmt="{:.0%}",
+        detail=conversion_detail)
+
+    playoff_games_played_value, playoff_games_played_holders = _leaders(
+        owners, lambda r: r['playoff_wins'] + r['playoff_losses'] + r['playoff_ties'])
+    records['most_playoff_games_played'] = _record(
+        "Most Playoff Games Played (Career)", playoff_games_played_value, playoff_games_played_holders,
+        fmt="{:.0f} games")
+
+    if seasons:
+        season_diff_entries = []
+        for owner, rec in owners.items():
+            for year, points in rec['season_points'].items():
+                if not _is_season_final(year):
+                    continue
+                against = sum(g['opp_points'] for g in rec['game_log'] if g['year'] == year)
+                season_diff_entries.append({'owner': owner, 'year': year, 'diff': points - against})
+        diff_value, diff_items = _extreme_items(season_diff_entries, lambda e: e['diff'])
+        records['best_season_point_differential'] = _record(
+            "Best Single-Season Point Differential", diff_value, _dedupe(i['owner'] for i in diff_items),
+            fmt="{:+,.1f}", detail=_tie_detail(diff_items, lambda e: f"{e['year']} season"))
+
+    # The mirror image of "Most Clutch Wins" - wins that were never in doubt.
+    dominant_wins_value, dominant_wins_holders = _leaders(
+        owners,
+        lambda r: sum(
+            1 for g in r['game_log']
+            if g['result'] == 'W' and (g['points'] - g['opp_points']) >= DOMINANT_WIN_MARGIN
+        ),
+    )
+    records['most_dominant_wins'] = _record(
+        "Most Dominant Wins (40+ Points)", dominant_wins_value, dominant_wins_holders, fmt="{:.0f} wins")
+
+    # _longest_playoff_streak is a generic "longest consecutive-years run
+    # within a qualifying set" despite its name - reused here for
+    # best_record_years instead of playoff_years.
+    best_record_streak_value, best_record_streak_holders = _leaders(
+        owners, lambda r: _longest_playoff_streak(r['years'], r['best_record_years']))
+    records['longest_best_record_streak'] = _record(
+        "Longest Streak With the League's Best Record", best_record_streak_value, best_record_streak_holders,
+        fmt="{:.0f} seasons")
+
+    def _winning_seasons_count(rec):
+        by_year = {}
+        for g in rec['game_log']:
+            s = by_year.setdefault(g['year'], {'w': 0, 'l': 0, 't': 0})
+            s['w' if g['result'] == 'W' else 't' if g['result'] == 'T' else 'l'] += 1
+        return sum(1 for s in by_year.values() if s['w'] > s['l'])
+
+    winning_seasons_value, winning_seasons_holders = _leaders(owners, _winning_seasons_count)
+    records['most_winning_seasons'] = _record(
+        "Most Seasons With a Winning Record", winning_seasons_value, winning_seasons_holders, fmt="{:.0f} seasons")
 
     return records
 
@@ -483,6 +649,90 @@ def compute_wall_of_shame(owners):
         owners, lambda r: _current_playoff_drought(r['years'], r['playoff_years']))
     records['current_playoff_drought'] = _record(
         "Longest ACTIVE Playoff Drought", current_drought_value, current_drought_holders, fmt="{:.0f} seasons")
+
+    point_diff_value, point_diff_holders = _leaders(
+        owners, lambda r: r['total_points'] - sum(g['opp_points'] for g in r['game_log']), best='min')
+    records['worst_point_differential'] = _record(
+        "Worst All-Time Point Differential", point_diff_value, point_diff_holders, fmt="{:+,.1f}")
+
+    if seasons:
+        season_diff_entries = []
+        for owner, rec in owners.items():
+            for year, points in rec['season_points'].items():
+                if not _is_season_final(year):
+                    continue
+                against = sum(g['opp_points'] for g in rec['game_log'] if g['year'] == year)
+                season_diff_entries.append({'owner': owner, 'year': year, 'diff': points - against})
+        worst_diff_value, worst_diff_items = _extreme_items(season_diff_entries, lambda e: e['diff'], best='min')
+        records['worst_season_point_differential'] = _record(
+            "Worst Single-Season Point Differential", worst_diff_value, _dedupe(i['owner'] for i in worst_diff_items),
+            fmt="{:+,.1f}", detail=_tie_detail(worst_diff_items, lambda e: f"{e['year']} season"))
+
+    career_ppg_entries = []
+    for owner, rec in owners.items():
+        total_games = rec['total_wins'] + rec['total_losses'] + rec['total_ties']
+        if total_games < MIN_GAMES_FOR_RECORD:
+            continue
+        career_ppg_entries.append({'owner': owner, 'ppg': rec['total_points'] / total_games})
+    if career_ppg_entries:
+        worst_ppg_value, worst_ppg_items = _extreme_items(career_ppg_entries, lambda e: e['ppg'], best='min')
+        records['worst_career_ppg'] = _record(
+            "Worst Career Points-Per-Game", worst_ppg_value, _dedupe(i['owner'] for i in worst_ppg_items),
+            fmt="{:,.1f} pts/game")
+
+    playoff_ppg_entries_shame = []
+    for owner, rec in owners.items():
+        playoff_games_log = [g for g in rec['game_log'] if g['is_playoff']]
+        if len(playoff_games_log) < MIN_PLAYOFF_GAMES_FOR_RECORD:
+            continue
+        playoff_ppg_entries_shame.append({
+            'owner': owner,
+            'ppg': sum(g['points'] for g in playoff_games_log) / len(playoff_games_log),
+        })
+    if playoff_ppg_entries_shame:
+        worst_playoff_ppg_value, worst_playoff_ppg_items = _extreme_items(
+            playoff_ppg_entries_shame, lambda e: e['ppg'], best='min')
+        records['worst_playoff_ppg'] = _record(
+            "Worst Playoff Points-Per-Game", worst_playoff_ppg_value,
+            _dedupe(i['owner'] for i in worst_playoff_ppg_items), fmt="{:,.1f} pts/game")
+
+    if games:
+        beatdown_value, beatdown_items = _extreme_items(games, lambda g: g['points'] - g['opp_points'], best='min')
+        records['worst_beatdown_suffered'] = _record(
+            "Worst Beatdown Suffered", beatdown_value, _dedupe(i['owner'] for i in beatdown_items),
+            fmt="{:,.1f} pt margin",
+            detail=_tie_detail(
+                beatdown_items,
+                lambda g: f"lost to {g['opponent']} {g['points']:,.1f}-{g['opp_points']:,.1f} "
+                          f"(Week {g['week']}, {g['year']})"))
+
+    # The mirror image of "Most Clutch Wins" - losses that came down to the wire.
+    heartbreak_losses_value, heartbreak_losses_holders = _leaders(
+        owners,
+        lambda r: sum(
+            1 for g in r['game_log']
+            if g['result'] == 'L' and (g['opp_points'] - g['points']) < CLOSE_GAME_MARGIN
+        ),
+    )
+    records['most_heartbreaking_losses'] = _record(
+        "Most Heartbreaking Losses (Under 10 Points)", heartbreak_losses_value, heartbreak_losses_holders,
+        fmt="{:.0f} losses")
+
+    # _longest_playoff_streak is a generic "longest consecutive-years run
+    # within a qualifying set" despite its name - reused here for dfl_years.
+    dfl_streak_value, dfl_streak_holders = _leaders(
+        owners, lambda r: _longest_playoff_streak(r['years'], r['dfl_years']))
+    records['longest_dfl_streak'] = _record(
+        "Most Consecutive DFL Finishes", dfl_streak_value, dfl_streak_holders, fmt="{:.0f} seasons")
+
+    # Led the league in scoring that season and STILL missed the playoffs -
+    # a career count of League Trivia's "Highest-Scoring Team to Miss the
+    # Playoffs" moment, for owners unlucky enough it's happened more than once.
+    snake_bitten_value, snake_bitten_holders = _leaders(
+        owners, lambda r: len(r['most_points_years'] - r['playoff_years']))
+    records['most_snake_bitten_seasons'] = _record(
+        "Most Snake-Bitten Seasons (Led League in Scoring, Missed Playoffs)",
+        snake_bitten_value, snake_bitten_holders, fmt="{:.0f} seasons")
 
     return records
 
@@ -568,7 +818,7 @@ def compute_league_trivia(owners):
         {'owner': owner, 'year': year, 'points': points}
         for owner, rec in owners.items()
         for year, points in rec['season_points'].items()
-        if year not in rec['playoff_years']
+        if year not in rec['playoff_years'] and _is_season_final(year)
     ]
     if non_playoff_seasons:
         unlucky_value, unlucky_items = _extreme_items(non_playoff_seasons, lambda s: s['points'])
@@ -589,6 +839,8 @@ def compute_league_trivia(owners):
     improvements = []
     for owner, rec in owners.items():
         for year in sorted(rec['season_points']):
+            if not _is_season_final(year):
+                continue
             if year - 1 in rec['season_points']:
                 improvements.append({
                     'owner': owner, 'year': year,
@@ -665,6 +917,24 @@ def compute_league_trivia(owners):
             fmt="{:.0f} playoff games",
             detail=_tie_detail(
                 pf_items, _rivalry_record_str, owner_fn=lambda p: " & ".join(sorted(p['pair']))))
+
+    nailbiter_streak_value, nailbiter_streak_holders = _leaders(
+        owners, lambda r: _close_game_streak(r['game_log']))
+    trivia['nailbiter_streak'] = _record(
+        "Longest Nail-Biter Streak (Consecutive Games Under 10 Points)",
+        nailbiter_streak_value, nailbiter_streak_holders, fmt="{:.0f} games")
+
+    # A DFL finish immediately followed by a championship the very next
+    # season - the ultimate worst-to-first redemption arc. Gated to owners
+    # who've actually done it, same reasoning as wire_to_wire_titles.
+    worst_to_first_value, worst_to_first_holders = _leaders(
+        owners,
+        lambda r: len([y for y in r['dfl_years'] if (y + 1) in r['champion_years']]),
+        minimum_fn=lambda r: len([y for y in r['dfl_years'] if (y + 1) in r['champion_years']]) >= 1,
+    )
+    trivia['worst_to_first'] = _record(
+        "Worst to First (DFL Finish, Champion the Very Next Year)",
+        worst_to_first_value, worst_to_first_holders, fmt="{:.0f} times")
 
     return trivia
 

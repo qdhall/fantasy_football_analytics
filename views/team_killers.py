@@ -4,7 +4,7 @@ from common import PALETTE, configure_page, get_league_history, render_footer, r
 from do_not_draft_stats import compute_do_not_draft_candidates, format_curse_rubric
 from espn_data import build_front_office_history, get_active_player_ids, get_credentials
 
-DISPLAY_COUNT = 20
+DISPLAY_COUNT = 50
 
 configure_page("Team Killers")
 
