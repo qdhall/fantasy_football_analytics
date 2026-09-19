@@ -931,9 +931,12 @@ def render_trivia_carousel(records, seconds_per_card=7, height=190):
     duration = max(20, len(items) * seconds_per_card)
 
     html = f"""
-    <html><head><style>
+    <html><head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
       html, body {{ margin:0; padding:0; font-family:-apple-system,"Segoe UI",sans-serif;
-                    background:transparent; overflow:hidden; }}
+                    background:transparent; overflow:hidden;
+                    -webkit-text-size-adjust:100%; text-size-adjust:100%; }}
       .wrap {{ height:{height - 16}px; overflow:hidden; -webkit-mask-image: linear-gradient(90deg,
                transparent, #000 5%, #000 95%, transparent);
                mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent); }}
@@ -944,7 +947,7 @@ def render_trivia_carousel(records, seconds_per_card=7, height=190):
         from {{ transform: translateX(0); }}
         to {{ transform: translateX(-50%); }}
       }}
-      .card {{ flex: 0 0 300px; box-sizing:border-box; padding:18px 22px;
+      .card {{ flex: 0 0 min(300px, 88vw); box-sizing:border-box; padding:18px 22px;
                border-radius:12px; border-top:4px solid transparent;
                background:{PALETTE['surface']}; box-shadow:0 1px 3px rgba(0,0,0,0.10);
                display:flex; flex-direction:column; justify-content:center; }}
@@ -1144,7 +1147,7 @@ def render_sportsbook_card(theme, label, m, pred, show_details, ats_records=None
     )
 
 
-def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, height=300):
+def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, height=356):
     """Same continuously-scrolling marquee mechanic as render_trivia_carousel
     (a duplicated track animated -50% and looped, built with
     components.v1.html for CSS isolation) - one slide per matchup instead of
@@ -1172,9 +1175,16 @@ def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, 
     duration = max(30, len(predictions) * seconds_per_card)
 
     html = f"""
-    <html><head><style>
+    <html><head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      /* Phones auto-enlarge small text inside narrow columns ("font boosting"),
+         which was pushing this card's real height past its fixed budget and
+         clipping the spread/win-probability bar at the bottom - disable it so
+         the card renders at the same sizes this layout was measured against. */
       html, body {{ margin:0; padding:0; font-family:-apple-system,"Segoe UI",sans-serif;
-                    background:transparent; overflow:hidden; }}
+                    background:transparent; overflow:hidden;
+                    -webkit-text-size-adjust:100%; text-size-adjust:100%; }}
       .wrap {{ height:{height - 16}px; overflow:hidden; -webkit-mask-image: linear-gradient(90deg,
                transparent, #000 3%, #000 97%, transparent);
                mask-image: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }}
@@ -1185,9 +1195,10 @@ def render_matchup_carousel(predictions, ats_records=None, seconds_per_card=10, 
         from {{ transform: translateX(0); }}
         to {{ transform: translateX(-50%); }}
       }}
-      .slide {{ flex: 0 0 340px; box-sizing:border-box; display:flex; flex-direction:column; }}
+      .slide {{ flex: 0 0 min(340px, 88vw); box-sizing:border-box; display:flex; flex-direction:column; }}
       .slide-title {{ font-weight:700; color:{PALETTE['ink_muted']}; font-size:0.78rem;
-                      text-transform:uppercase; letter-spacing:0.04em; margin-bottom:8px; }}
+                      text-transform:uppercase; letter-spacing:0.04em; margin-bottom:8px;
+                      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
       .slide-card {{ flex:1; min-width:0; }}
     </style></head>
     <body>
