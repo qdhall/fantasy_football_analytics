@@ -9,8 +9,7 @@ st.header(":material/casino: Luck Index")
 
 st.subheader(":material/schedule: 2026 Season Luck")
 st.info(
-    "The season hasn't kicked off yet - once games start, this section will break "
-    "the same signals down for 2026 alone.",
+    "2026 Season Luck will be available after Week 4 to allow a fair sample of data.",
     icon=":material/schedule:",
 )
 
